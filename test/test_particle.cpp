@@ -182,6 +182,119 @@ void testFileTypeDetection() {
     std::cout << "  读取 .csv 文件: " << count2 << " 个粒子\n";
 }
 
+void testVTKWrite() {
+    printSeparator("测试 VTK 格式写入功能");
+    
+    FileOperator file_op;
+    
+    // 读取数据
+    FluidParticle fluid("fluid_vtk");
+    fluid.getParticleFromFile("data/fluid_particles.txt");
+    std::cout << "读取了 " << fluid.particle_num << " 个流体粒子\n";
+    
+    SolidParticle solid("solid_vtk");
+    solid.getParticleFromFile("data/solid_particles.txt");
+    std::cout << "读取了 " << solid.particle_num << " 个固体粒子\n";
+    
+    // 如果数据文件为空，创建一些测试数据
+    if (fluid.particle_num == 0) {
+        std::cout << "\n注意: 数据文件为空，创建测试数据...\n";
+        fluid.particle_num = 5;
+        fluid.position.resize(5);
+        fluid.velocity.resize(5);
+        fluid.density.resize(5);
+        fluid.pressure.resize(5);
+        fluid.surface_type.resize(5);
+        
+        for (int i = 0; i < 5; ++i) {
+            fluid.position[i] = {i * 0.1, i * 0.1, i * 0.1};
+            fluid.velocity[i] = {0.0, 0.0, 0.0};
+            fluid.density[i] = 1000.0 + i * 10.0;
+            fluid.pressure[i] = i * 100.0;
+            fluid.surface_type[i] = SurfaceType::INNER;
+        }
+        std::cout << "创建了 " << fluid.particle_num << " 个测试流体粒子\n";
+    }
+    
+    if (solid.particle_num == 0) {
+        std::cout << "\n注意: 数据文件为空，创建测试数据...\n";
+        solid.particle_num = 3;
+        solid.position.resize(3);
+        solid.velocity.resize(3);
+        solid.normal_vector.resize(3);
+        
+        for (int i = 0; i < 3; ++i) {
+            solid.position[i] = {i * 0.2, i * 0.2, i * 0.2};
+            solid.velocity[i] = {0.0, 0.0, 0.0};
+            solid.normal_vector[i] = {1.0, 0.0, 0.0};
+        }
+        std::cout << "创建了 " << solid.particle_num << " 个测试固体粒子\n";
+    }
+    
+    // 测试1：写入流体粒子基础VTK文件（位置和速度）
+    std::cout << "\n1. 写入 FluidParticle 基础 VTK 文件（位置和速度）:\n";
+    bool success1 = file_op.writeVTKBase("data/output_fluid.vtk", fluid);
+    std::cout << "   写入结果: " << (success1 ? "成功" : "失败") << "\n";
+    
+    // 测试2：追加密度标量（double类型）
+    if (success1 && fluid.particle_num > 0) {
+        std::cout << "\n2. 追加密度标量（double类型）:\n";
+        // 确保密度数据存在
+        if (fluid.density.size() < static_cast<size_t>(fluid.particle_num)) {
+            fluid.density.resize(fluid.particle_num, 1000.0);
+        }
+        bool success2 = file_op.appendVTKScalar("data/output_fluid.vtk", "density", fluid.density);
+        std::cout << "   追加结果: " << (success2 ? "成功" : "失败") << "\n";
+        
+        // 测试3：追加压力标量（double类型）
+        std::cout << "\n3. 追加压力标量（double类型）:\n";
+        if (fluid.pressure.size() < static_cast<size_t>(fluid.particle_num)) {
+            fluid.pressure.resize(fluid.particle_num, 0.0);
+        }
+        bool success3 = file_op.appendVTKScalar("data/output_fluid.vtk", "pressure", fluid.pressure);
+        std::cout << "   追加结果: " << (success3 ? "成功" : "失败") << "\n";
+        
+        // 测试4：追加表面类型标量（int类型）
+        std::cout << "\n4. 追加表面类型标量（int类型）:\n";
+        if (fluid.surface_type.size() < static_cast<size_t>(fluid.particle_num)) {
+            fluid.surface_type.resize(fluid.particle_num, SurfaceType::INNER);
+        }
+        std::vector<int> surface_types(fluid.particle_num);
+        for (int i = 0; i < fluid.particle_num; ++i) {
+            surface_types[i] = static_cast<int>(fluid.surface_type[i]);
+        }
+        bool success4 = file_op.appendVTKScalar("data/output_fluid.vtk", "surface_type", surface_types);
+        std::cout << "   追加结果: " << (success4 ? "成功" : "失败") << "\n";
+    }
+    
+    // 测试5：写入固体粒子基础VTK文件（位置和速度）
+    std::cout << "\n5. 写入 SolidParticle 基础 VTK 文件（位置和速度）:\n";
+    bool success5 = file_op.writeVTKBase("data/output_solid.vtk", solid);
+    std::cout << "   写入结果: " << (success5 ? "成功" : "失败") << "\n";
+    
+    // 测试6：追加法向向量（double3类型）
+    if (success5 && solid.particle_num > 0) {
+        std::cout << "\n6. 追加法向向量（double3类型）:\n";
+        // 确保法向向量数据存在
+        if (solid.normal_vector.size() < static_cast<size_t>(solid.particle_num)) {
+            solid.normal_vector.resize(solid.particle_num, {1.0, 0.0, 0.0});
+        }
+        bool success6 = file_op.appendVTKVector("data/output_solid.vtk", "normal_vector", solid.normal_vector);
+        std::cout << "   追加结果: " << (success6 ? "成功" : "失败") << "\n";
+        
+        // 测试7：追加int3类型的向量（示例）
+        std::cout << "\n7. 追加int3类型向量（示例）:\n";
+        std::vector<int3> int3_vec(solid.particle_num);
+        for (int i = 0; i < solid.particle_num; ++i) {
+            int3_vec[i] = {i, i+1, i+2};
+        }
+        bool success7 = file_op.appendVTKVector("data/output_solid.vtk", "int_vector_field", int3_vec);
+        std::cout << "   追加结果: " << (success7 ? "成功" : "失败") << "\n";
+    }
+    
+    std::cout << "\nVTK文件已生成，可以使用 ParaView 或其他VTK可视化工具打开查看。\n";
+}
+
 int main() {
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "MPS Baseline - Particle 类功能测试\n";
@@ -204,11 +317,15 @@ int main() {
         // 测试文件类型检测
         testFileTypeDetection();
         
+        // 测试VTK格式写入功能
+        testVTKWrite();
+        
         printSeparator("所有测试完成");
         std::cout << "\n测试结果文件已生成在 data/ 目录下:\n";
         std::cout << "  - output_fluid.txt / output_fluid.csv\n";
         std::cout << "  - output_solid.txt / output_solid.csv\n";
         std::cout << "  - debug_double.txt / debug_double3.txt / debug_double3.csv\n";
+        std::cout << "  - output_fluid.vtk / output_solid.vtk\n";
         
     } catch (const std::exception& e) {
         std::cerr << "\n错误: " << e.what() << "\n";

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <type_traits>
 
 namespace mps {
 
@@ -24,6 +25,8 @@ FileType FileOperator::getFileTypeFromFilename(const std::string& filename) cons
     return FileType::CSV;
   } else if (extension == "h5" || extension == "hdf5") {
     return FileType::HDF5;
+  } else if (extension == "vtk") {
+    return FileType::VTK;
   } else {
     // 默认返回TXT（包括.txt和其他未知扩展名）
     return FileType::TXT;
@@ -292,6 +295,7 @@ bool FileOperator::writeToHDF5(const std::string& filename,
   return false;
 }
 
+
 // 通用写入函数
 template<typename ParticleType>
 bool FileOperator::writeParticleToFile(const std::string& filename,
@@ -305,6 +309,9 @@ bool FileOperator::writeParticleToFile(const std::string& filename,
       return writeToCSV(filename, particle, custom_fields);
     case FileType::HDF5:
       return writeToHDF5(filename, particle, custom_fields);
+    case FileType::VTK:
+      // VTK格式不支持通过writeParticleToFile写入，请使用writeVTKBase
+      return false;
     default:
       return false;
   }
@@ -362,6 +369,319 @@ bool FileOperator::writeVectorToFile<double3>(const std::string& filename,
   return true;
 }
 
+// VTK基础输出函数：写入粒子的位置和速度（模板函数）
+// 支持类型：FluidParticle, SolidParticle
+template<typename ParticleType>
+bool FileOperator::writeVTKBase(const std::string& filename, const ParticleType& particles) {
+  std::ofstream file(filename);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  int actual_count = std::min(particles.particle_num, 
+                               static_cast<int>(particles.position.size()));
+  
+  if (actual_count == 0) {
+    file.close();
+    return false;
+  }
+  
+  file << std::fixed << std::setprecision(15);
+  
+  // VTK文件头
+  file << "# vtk DataFile Version 3.0\n";
+  file << "MPS Particle Data - " << particles.name << "\n";
+  file << "ASCII\n";
+  file << "DATASET POLYDATA\n";
+  
+  // 写入点坐标
+  file << "POINTS " << actual_count << " float\n";
+  for (int i = 0; i < actual_count; ++i) {
+    if (i < static_cast<int>(particles.position.size())) {
+      const auto& pos = particles.position[i];
+      file << pos[0] << " " << pos[1] << " " << pos[2] << "\n";
+    }
+  }
+  
+  // 写入顶点（每个点作为一个顶点）
+  file << "VERTICES " << actual_count << " " << (actual_count * 2) << "\n";
+  for (int i = 0; i < actual_count; ++i) {
+    file << "1 " << i << "\n";
+  }
+  
+  // 写入点数据
+  file << "POINT_DATA " << actual_count << "\n";
+  
+  // 写入速度向量
+  if (actual_count <= static_cast<int>(particles.velocity.size())) {
+    file << "VECTORS velocity float\n";
+    for (int i = 0; i < actual_count; ++i) {
+      const auto& vel = particles.velocity[i];
+      file << vel[0] << " " << vel[1] << " " << vel[2] << "\n";
+    }
+  }
+  
+  file.close();
+  return true;
+}
+
+// VTK文件解析辅助函数：读取VTK文件内容
+bool FileOperator::readVTKFile(const std::string& filename,
+                               std::vector<std::string>& header_lines,
+                               std::vector<std::string>& point_data_lines,
+                               int& num_points) {
+  std::ifstream file(filename);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  std::string line;
+  bool in_point_data = false;
+  bool reading_points = false;
+  bool reading_vertices = false;
+  bool reading_vector_data = false;
+  bool reading_scalar_data = false;
+  int points_read = 0;
+  int vertices_read = 0;
+  int vertices_total = 0;
+  int vector_data_read = 0;
+  int scalar_data_read = 0;
+  int expected_scalar_count = 0;
+  
+  header_lines.clear();
+  point_data_lines.clear();
+  num_points = 0;
+  
+  while (std::getline(file, line)) {
+    // 解析POINTS行
+    if (line.find("POINTS") == 0) {
+      std::istringstream iss(line);
+      std::string token;
+      iss >> token;  // "POINTS"
+      iss >> num_points;
+      iss >> token;  // "float"
+      reading_points = true;
+      points_read = 0;
+      header_lines.push_back(line);
+      continue;
+    }
+    
+    // 解析VERTICES行
+    if (line.find("VERTICES") == 0) {
+      std::istringstream iss(line);
+      std::string token;
+      iss >> token;  // "VERTICES"
+      int num_vertices;
+      iss >> num_vertices;
+      iss >> vertices_total;
+      reading_vertices = true;
+      vertices_read = 0;
+      header_lines.push_back(line);
+      continue;
+    }
+    
+    // 解析POINT_DATA行
+    if (line.find("POINT_DATA") == 0) {
+      in_point_data = true;
+      header_lines.push_back(line);
+      continue;
+    }
+    
+    // 解析VECTORS声明行
+    if (in_point_data && line.find("VECTORS") == 0) {
+      reading_vector_data = true;
+      vector_data_read = 0;
+      point_data_lines.push_back(line);
+      continue;
+    }
+    
+    // 解析SCALARS声明行
+    if (in_point_data && line.find("SCALARS") == 0) {
+      reading_scalar_data = true;
+      scalar_data_read = 0;
+      expected_scalar_count = num_points;
+      point_data_lines.push_back(line);
+      continue;
+    }
+    
+    // 解析LOOKUP_TABLE行
+    if (in_point_data && line.find("LOOKUP_TABLE") == 0) {
+      point_data_lines.push_back(line);
+      continue;
+    }
+    
+    // 读取点坐标
+    if (reading_points && points_read < num_points) {
+      header_lines.push_back(line);
+      ++points_read;
+      if (points_read >= num_points) {
+        reading_points = false;
+      }
+      continue;
+    }
+    
+    // 读取顶点数据
+    if (reading_vertices && vertices_read < vertices_total) {
+      header_lines.push_back(line);
+      ++vertices_read;
+      if (vertices_read >= vertices_total) {
+        reading_vertices = false;
+      }
+      continue;
+    }
+    
+    // 读取向量数据
+    if (reading_vector_data && vector_data_read < num_points) {
+      point_data_lines.push_back(line);
+      ++vector_data_read;
+      if (vector_data_read >= num_points) {
+        reading_vector_data = false;
+      }
+      continue;
+    }
+    
+    // 读取标量数据
+    if (reading_scalar_data && scalar_data_read < expected_scalar_count) {
+      point_data_lines.push_back(line);
+      ++scalar_data_read;
+      if (scalar_data_read >= expected_scalar_count) {
+        reading_scalar_data = false;
+      }
+      continue;
+    }
+    
+    // 其他行
+    if (in_point_data) {
+      point_data_lines.push_back(line);
+    } else {
+      header_lines.push_back(line);
+    }
+  }
+  
+  file.close();
+  return (num_points > 0);
+}
+
+// VTK文件快速读取：只读取点数量（用于验证）
+bool FileOperator::readVTKPointCount(const std::string& filename, int& num_points) {
+  std::ifstream file(filename);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  std::string line;
+  num_points = 0;
+  
+  // 只读取POINTS行来获取点数量
+  while (std::getline(file, line)) {
+    if (line.find("POINTS") == 0) {
+      std::istringstream iss(line);
+      std::string token;
+      iss >> token;  // "POINTS"
+      iss >> num_points;
+      file.close();
+      return (num_points > 0);
+    }
+  }
+  
+  file.close();
+  return false;
+}
+
+// VTK追加函数：向已存在的VTK文件追加标量数据（模板函数）
+// 支持类型：int, double
+template<typename ScalarType>
+bool FileOperator::appendVTKScalar(const std::string& filename,
+                                   const std::string& scalar_name,
+                                   const std::vector<ScalarType>& scalar_data) {
+  // 快速读取点数量进行验证
+  int num_points = 0;
+  if (!readVTKPointCount(filename, num_points)) {
+    return false;
+  }
+  
+  // 检查数据大小是否匹配
+  if (static_cast<int>(scalar_data.size()) != num_points) {
+    return false;
+  }
+  
+  // 直接以追加模式打开文件
+  std::ofstream file(filename, std::ios::app);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  file << std::fixed << std::setprecision(15);
+  
+  // 根据类型确定VTK数据类型
+  std::string vtk_type;
+  if constexpr (std::is_same_v<ScalarType, int>) {
+    vtk_type = "int";
+  } else if constexpr (std::is_same_v<ScalarType, double>) {
+    vtk_type = "float";
+  } else {
+    // 默认使用float
+    vtk_type = "float";
+  }
+  
+  // 追加新的标量数据
+  file << "SCALARS " << scalar_name << " " << vtk_type << "\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_points; ++i) {
+    file << scalar_data[i] << "\n";
+  }
+  
+  file.close();
+  return true;
+}
+
+// VTK追加函数：向已存在的VTK文件追加向量数据（模板函数）
+// 支持类型：int3, double3
+template<typename VectorType>
+bool FileOperator::appendVTKVector(const std::string& filename,
+                                  const std::string& vector_name,
+                                  const std::vector<VectorType>& vector_data) {
+  // 快速读取点数量进行验证
+  int num_points = 0;
+  if (!readVTKPointCount(filename, num_points)) {
+    return false;
+  }
+  
+  // 检查数据大小是否匹配
+  if (static_cast<int>(vector_data.size()) != num_points) {
+    return false;
+  }
+  
+  // 直接以追加模式打开文件
+  std::ofstream file(filename, std::ios::app);
+  if (!file.is_open()) {
+    return false;
+  }
+  
+  file << std::fixed << std::setprecision(15);
+  
+  // 根据类型确定VTK数据类型
+  std::string vtk_type;
+  if constexpr (std::is_same_v<VectorType, int3>) {
+    vtk_type = "int";
+  } else if constexpr (std::is_same_v<VectorType, double3>) {
+    vtk_type = "float";
+  } else {
+    // 默认使用float
+    vtk_type = "float";
+  }
+  
+  // 追加新的向量数据
+  file << "VECTORS " << vector_name << " " << vtk_type << "\n";
+  for (int i = 0; i < num_points; ++i) {
+    const auto& vec = vector_data[i];
+    file << vec[0] << " " << vec[1] << " " << vec[2] << "\n";
+  }
+  
+  file.close();
+  return true;
+}
+
 // 显式模板实例化
 template int FileOperator::getParticleFromFile<FluidParticle>(
     const std::string& filename, FluidParticle& particle);
@@ -382,6 +702,34 @@ template bool FileOperator::writeParticleToFile<Particle>(
     const std::string& filename,
     const Particle& particle,
     const std::set<std::string>& custom_fields);
+
+// 显式实例化 writeVTKBase
+template bool FileOperator::writeVTKBase<FluidParticle>(
+    const std::string& filename,
+    const FluidParticle& particles);
+template bool FileOperator::writeVTKBase<SolidParticle>(
+    const std::string& filename,
+    const SolidParticle& particles);
+
+// 显式实例化 appendVTKScalar
+template bool FileOperator::appendVTKScalar<int>(
+    const std::string& filename,
+    const std::string& scalar_name,
+    const std::vector<int>& scalar_data);
+template bool FileOperator::appendVTKScalar<double>(
+    const std::string& filename,
+    const std::string& scalar_name,
+    const std::vector<double>& scalar_data);
+
+// 显式实例化 appendVTKVector
+template bool FileOperator::appendVTKVector<int3>(
+    const std::string& filename,
+    const std::string& vector_name,
+    const std::vector<int3>& vector_data);
+template bool FileOperator::appendVTKVector<double3>(
+    const std::string& filename,
+    const std::string& vector_name,
+    const std::vector<double3>& vector_data);
 
 // 显式实例化 writeVectorToFile
 template bool FileOperator::writeVectorToFile<double>(
