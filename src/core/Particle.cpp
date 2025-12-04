@@ -58,6 +58,8 @@ void Particle::copyParticle(const Particle& other) {
     this_fluid.density = other_fluid.density;
     this_fluid.pressure = other_fluid.pressure;
     this_fluid.surface_type = other_fluid.surface_type;
+    this_fluid.fluid_neighbour_list = other_fluid.fluid_neighbour_list;
+    this_fluid.solid_neighbour_list = other_fluid.solid_neighbour_list;
   }
   // 如果是基类 Particle，只拷贝基类数据即可
 }

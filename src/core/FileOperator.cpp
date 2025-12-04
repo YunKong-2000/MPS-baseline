@@ -106,6 +106,13 @@ int FileOperator::readFromTXT(const std::string& filename, ParticleType& particl
   }
   
   particle.particle_num = count;
+  
+  // 为FluidParticle调整neighbour_list大小
+  if constexpr (std::is_same_v<ParticleType, FluidParticle>) {
+    particle.fluid_neighbour_list.resize(count);
+    particle.solid_neighbour_list.resize(count);
+  }
+  
   file.close();
   return count;
 }
@@ -148,6 +155,13 @@ int FileOperator::readFromCSV(const std::string& filename, ParticleType& particl
   }
   
   particle.particle_num = count;
+  
+  // 为FluidParticle调整neighbour_list大小
+  if constexpr (std::is_same_v<ParticleType, FluidParticle>) {
+    particle.fluid_neighbour_list.resize(count);
+    particle.solid_neighbour_list.resize(count);
+  }
+  
   file.close();
   return count;
 }

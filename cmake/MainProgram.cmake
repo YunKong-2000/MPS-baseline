@@ -1,8 +1,9 @@
 # 主程序配置
 add_executable(${PROJECT_NAME}
     src/main.cpp
-    ${CORE_SOURCES}
-    ${CONFIG_SOURCES}
+    ${CORE_SOURCES} # 核心模块
+    ${CONFIG_SOURCES} # 配置模块
+    ${NEIGHBOR_LIST_SOURCES} # 邻居列表模块
 )
 
 # 设置目标属性

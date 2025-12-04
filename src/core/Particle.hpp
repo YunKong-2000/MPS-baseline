@@ -38,11 +38,16 @@ class FluidParticle : public Particle {
   std::vector<double> density;
   std::vector<double> pressure;
   std::vector<SurfaceType> surface_type;
+  std::vector<std::vector<int>> fluid_neighbour_list;   // 每个粒子的相邻流体粒子索引列表
+  std::vector<std::vector<int>> solid_neighbour_list;   // 每个粒子的相邻固体粒子索引列表
+  
   FluidParticle(std::string name) : Particle(name) {
     particle_num = 0;
     density.resize(particle_num);
     pressure.resize(particle_num);
     surface_type.resize(particle_num);
+    fluid_neighbour_list.resize(particle_num);
+    solid_neighbour_list.resize(particle_num);
   }
   ~FluidParticle() {}
 };

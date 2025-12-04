@@ -25,6 +25,11 @@ set(CONFIG_SOURCES
     src/config/MPSConfig.cpp
 )
 
+# 邻居列表模块源文件
+set(NEIGHBOR_LIST_SOURCES
+    src/neighbour_list/NeighborListSearcher.cpp
+)
+
 # 复制数据目录到可执行文件目录
 function(copy_data_directory target_name)
     file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
