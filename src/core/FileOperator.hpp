@@ -93,6 +93,7 @@ private:
                          const std::string& delimiter);
 };
 
+// double3向量写入特化声明
 template<>
 bool FileOperator::writeVectorToFile<double3>(const std::string& filename,
                                                     const std::vector<mps::double3>& data,
@@ -100,4 +101,3 @@ bool FileOperator::writeVectorToFile<double3>(const std::string& filename,
 
 } // namespace mps
 
-// double3向量写入特化声明

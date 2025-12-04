@@ -1,0 +1,84 @@
+# CMake 构建目录
+build/
+cmake-build-*/
+
+# CMake 生成的文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!cmake/*.cmake
+
+# 编译产生的文件
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# 可执行文件
+bin/
+lib/
+
+# 调试信息文件
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# 编译数据库
+compile_commands.json
+
+# IDE 相关文件
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# CLion
+.idea/
+cmake-build-*/
+
+# Visual Studio
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Qt Creator
+*.pro.user
+*.pro.user.*
+
+# Eclipse
+.project
+.cproject
+.settings/
+
+# 临时文件
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 备份文件
+*.bak
+*.backup
+*.tmp
+
+# 测试输出文件（可选，如果需要保留测试输出可以注释掉）
+# build/bin/data/output_*
+# build/bin/data/debug_*
+
