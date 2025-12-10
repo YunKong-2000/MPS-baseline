@@ -58,17 +58,21 @@ void NeighborListSearcher::BuildNeighborList(FluidParticle& fluid_particles,
   std::vector<std::vector<int>> fluid_cell_particles(total_cells);
   std::vector<std::vector<int>> solid_cell_particles(total_cells);
 
-  // 建立流体粒子的网格映射（使用排序后的索引）
+  // 建立流体粒子的网格映射（排序后需要重新计算网格索引）
   for (int i = 0; i < fluid_particles.particle_num; ++i) {
-    int cell_idx = fluid_cell_indices[i];
+    int3 grid_coords = GetGridCoordinates(fluid_particles.position[i], domain_min, r_cell);
+    int cell_idx = GetCellIndex(grid_coords[0], grid_coords[1], grid_coords[2],
+                                num_cells_x, num_cells_y, num_cells_z);
     if (cell_idx >= 0 && cell_idx < total_cells) {
       fluid_cell_particles[cell_idx].push_back(i);
     }
   }
 
-  // 建立固体粒子的网格映射
+  // 建立固体粒子的网格映射（排序后需要重新计算网格索引）
   for (int i = 0; i < solid_particles.particle_num; ++i) {
-    int cell_idx = solid_cell_indices[i];
+    int3 grid_coords = GetGridCoordinates(solid_particles.position[i], domain_min, r_cell);
+    int cell_idx = GetCellIndex(grid_coords[0], grid_coords[1], grid_coords[2],
+                                num_cells_x, num_cells_y, num_cells_z);
     if (cell_idx >= 0 && cell_idx < total_cells) {
       solid_cell_particles[cell_idx].push_back(i);
     }

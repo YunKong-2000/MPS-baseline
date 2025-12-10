@@ -3,8 +3,10 @@
 #include <cmath>
 #include <algorithm>
 #include <cassert>
+#include <map>
 #include "../src/neighbour_list/NeighborListSearcher.hpp"
 #include "../src/core/Particle.hpp"
+#include "../src/core/FileOperator.hpp"
 
 using namespace mps;
 
@@ -509,6 +511,223 @@ void testLargeCellSize() {
     }
 }
 
+// 测试8：均匀立方体粒子分布 + VTK输出
+void testUniformCubeWithVTK() {
+    printSeparator("测试8: 均匀立方体粒子分布 + VTK输出");
+    
+    NeighborListSearcher searcher;
+    FileOperator file_op;
+    
+    FluidParticle fluid("cube_fluid");
+    SolidParticle solid("cube_solid");
+    
+    // 立方体参数
+    double cube_size = 2.0;          // 立方体边长
+    double spacing = 0.1;             // 粒子间距
+    double r_e = 0.15;                // 搜索半径
+    double r_cell = 0.2;             // 网格尺寸
+    
+    // 计算每个方向的粒子数
+    int nx = static_cast<int>(cube_size / spacing) + 1;
+    int ny = nx;
+    int nz = nx;
+    int total_particles = nx * ny * nz;
+    
+    std::cout << "立方体参数:\n";
+    std::cout << "  边长: " << cube_size << "\n";
+    std::cout << "  粒子间距: " << spacing << "\n";
+    std::cout << "  每个方向粒子数: " << nx << "\n";
+    std::cout << "  总粒子数: " << total_particles << "\n";
+    std::cout << "  搜索半径 r_e: " << r_e << "\n";
+    std::cout << "  网格尺寸 r_cell: " << r_cell << "\n";
+    
+    // 创建流体粒子 - 均匀分布在立方体中
+    fluid.particle_num = total_particles;
+    fluid.position.resize(total_particles);
+    fluid.velocity.resize(total_particles);
+    fluid.density.resize(total_particles);
+    fluid.pressure.resize(total_particles);
+    fluid.surface_type.resize(total_particles);
+    
+    int idx = 0;
+    for (int iz = 0; iz < nz; ++iz) {
+        for (int iy = 0; iy < ny; ++iy) {
+            for (int ix = 0; ix < nx; ++ix) {
+                double x = ix * spacing;
+                double y = iy * spacing;
+                double z = iz * spacing;
+                
+                fluid.position[idx] = {x, y, z};
+                fluid.velocity[idx] = {0.0, 0.0, 0.0};
+                fluid.density[idx] = 1000.0;
+                fluid.pressure[idx] = 0.0;
+                fluid.surface_type[idx] = SurfaceType::INNER;
+                ++idx;
+            }
+        }
+    }
+    
+    // 创建一些固体粒子 - 在立方体底部形成边界层
+    // 简化：只在立方体底部创建一层固体粒子
+    solid.particle_num = nx * ny;
+    solid.position.resize(solid.particle_num);
+    solid.velocity.resize(solid.particle_num);
+    solid.normal_vector.resize(solid.particle_num);
+    
+    idx = 0;
+    for (int iy = 0; iy < ny; ++iy) {
+        for (int ix = 0; ix < nx; ++ix) {
+            double x = ix * spacing;
+            double y = iy * spacing;
+            double z = -spacing;  // 在底部下方
+            
+            solid.position[idx] = {x, y, z};
+            solid.velocity[idx] = {0.0, 0.0, 0.0};
+            solid.normal_vector[idx] = {0.0, 0.0, 1.0};  // 法向量向上
+            ++idx;
+        }
+    }
+    
+    std::cout << "\n创建了 " << fluid.particle_num << " 个流体粒子和 " 
+              << solid.particle_num << " 个固体粒子\n";
+    
+    // 构建邻居列表
+    std::cout << "\n构建邻居列表...\n";
+    searcher.BuildNeighborList(fluid, solid, spacing, r_e, r_cell);
+    
+    // 统计邻居信息
+    std::vector<int> fluid_neighbor_counts(fluid.particle_num);
+    std::vector<int> solid_neighbor_counts(fluid.particle_num);
+    
+    int total_fluid_neighbors = 0;
+    int total_solid_neighbors = 0;
+    int max_fluid_neighbors = 0;
+    int max_solid_neighbors = 0;
+    int min_fluid_neighbors = total_particles;
+    int min_solid_neighbors = solid.particle_num;
+    
+    // 统计内部粒子的邻居数（排除边界粒子）
+    // 内部粒子：距离边界至少一个粒子间距
+    double boundary_margin = spacing;
+    int inner_particle_count = 0;
+    int inner_fluid_neighbor_sum = 0;
+    std::map<int, int> neighbor_count_distribution;  // 邻居数 -> 粒子数
+    
+    for (int i = 0; i < fluid.particle_num; ++i) {
+        fluid_neighbor_counts[i] = static_cast<int>(fluid.fluid_neighbour_list[i].size());
+        solid_neighbor_counts[i] = static_cast<int>(fluid.solid_neighbour_list[i].size());
+        
+        total_fluid_neighbors += fluid_neighbor_counts[i];
+        total_solid_neighbors += solid_neighbor_counts[i];
+        max_fluid_neighbors = std::max(max_fluid_neighbors, fluid_neighbor_counts[i]);
+        max_solid_neighbors = std::max(max_solid_neighbors, solid_neighbor_counts[i]);
+        min_fluid_neighbors = std::min(min_fluid_neighbors, fluid_neighbor_counts[i]);
+        min_solid_neighbors = std::min(min_solid_neighbors, solid_neighbor_counts[i]);
+        
+        // 统计邻居数分布
+        neighbor_count_distribution[fluid_neighbor_counts[i]]++;
+        
+        // 判断是否为内部粒子
+        const auto& pos = fluid.position[i];
+        bool is_inner = (pos[0] >= boundary_margin && pos[0] <= cube_size - boundary_margin &&
+                         pos[1] >= boundary_margin && pos[1] <= cube_size - boundary_margin &&
+                         pos[2] >= boundary_margin && pos[2] <= cube_size - boundary_margin);
+        if (is_inner) {
+            inner_particle_count++;
+            inner_fluid_neighbor_sum += fluid_neighbor_counts[i];
+        }
+    }
+    
+    std::cout << "\n邻居列表统计:\n";
+    std::cout << "  总流体邻居数: " << total_fluid_neighbors << "\n";
+    std::cout << "  总固体邻居数: " << total_solid_neighbors << "\n";
+    std::cout << "  平均流体邻居数: " << static_cast<double>(total_fluid_neighbors) / fluid.particle_num << "\n";
+    std::cout << "  平均固体邻居数: " << static_cast<double>(total_solid_neighbors) / fluid.particle_num << "\n";
+    std::cout << "  最大流体邻居数: " << max_fluid_neighbors << "\n";
+    std::cout << "  最小流体邻居数: " << min_fluid_neighbors << "\n";
+    std::cout << "  最大固体邻居数: " << max_solid_neighbors << "\n";
+    std::cout << "  最小固体邻居数: " << min_solid_neighbors << "\n";
+    
+    // 内部粒子统计
+    if (inner_particle_count > 0) {
+        double avg_inner_neighbors = static_cast<double>(inner_fluid_neighbor_sum) / inner_particle_count;
+        std::cout << "\n内部粒子统计（距离边界 >= " << boundary_margin << "）:\n";
+        std::cout << "  内部粒子数: " << inner_particle_count << "\n";
+        std::cout << "  平均流体邻居数: " << avg_inner_neighbors << "\n";
+        
+        // 统计内部粒子的邻居数分布
+        std::map<int, int> inner_neighbor_distribution;
+        int inner_max = 0, inner_min = total_particles;
+        for (int i = 0; i < fluid.particle_num; ++i) {
+            const auto& pos = fluid.position[i];
+            bool is_inner = (pos[0] >= boundary_margin && pos[0] <= cube_size - boundary_margin &&
+                             pos[1] >= boundary_margin && pos[1] <= cube_size - boundary_margin &&
+                             pos[2] >= boundary_margin && pos[2] <= cube_size - boundary_margin);
+            if (is_inner) {
+                int count = fluid_neighbor_counts[i];
+                inner_neighbor_distribution[count]++;
+                inner_max = std::max(inner_max, count);
+                inner_min = std::min(inner_min, count);
+            }
+        }
+        std::cout << "  内部粒子最大邻居数: " << inner_max << "\n";
+        std::cout << "  内部粒子最小邻居数: " << inner_min << "\n";
+        std::cout << "  内部粒子邻居数分布（前10个最常见的）:\n";
+        int count = 0;
+        for (auto it = inner_neighbor_distribution.rbegin(); 
+             it != inner_neighbor_distribution.rend() && count < 10; ++it, ++count) {
+            std::cout << "    " << it->first << " 个邻居: " << it->second << " 个粒子\n";
+        }
+    }
+    
+    // 显示所有粒子的邻居数分布（前10个最常见的）
+    std::cout << "\n所有粒子邻居数分布（前10个最常见的）:\n";
+    int count = 0;
+    for (auto it = neighbor_count_distribution.rbegin(); 
+         it != neighbor_count_distribution.rend() && count < 10; ++it, ++count) {
+        std::cout << "  " << it->first << " 个邻居: " << it->second << " 个粒子\n";
+    }
+    
+    // 验证邻居列表正确性
+    if (verifyNeighborList(fluid, solid, r_e)) {
+        std::cout << "✓ 邻居列表验证通过\n";
+    } else {
+        std::cout << "✗ 邻居列表验证失败\n";
+    }
+    
+    // 输出VTK文件
+    std::cout << "\n输出VTK文件...\n";
+    std::string vtk_filename = "data/cube_particles.vtk";
+    
+    // 1. 写入基础VTK文件（位置和速度）
+    bool success1 = file_op.writeVTKBase(vtk_filename, fluid);
+    if (!success1) {
+        std::cout << "✗ 写入基础VTK文件失败\n";
+        return;
+    }
+    std::cout << "✓ 写入基础VTK文件成功: " << vtk_filename << "\n";
+    
+    // 2. 追加流体邻居数标量
+    bool success2 = file_op.appendVTKScalar(vtk_filename, "fluid_neighbor_count", fluid_neighbor_counts);
+    if (!success2) {
+        std::cout << "✗ 追加流体邻居数标量失败\n";
+        return;
+    }
+    std::cout << "✓ 追加流体邻居数标量成功\n";
+    
+    // 3. 追加固体邻居数标量
+    bool success3 = file_op.appendVTKScalar(vtk_filename, "solid_neighbor_count", solid_neighbor_counts);
+    if (!success3) {
+        std::cout << "✗ 追加固体邻居数标量失败\n";
+        return;
+    }
+    std::cout << "✓ 追加固体邻居数标量成功\n";
+    
+    std::cout << "\nVTK文件已生成: " << vtk_filename << "\n";
+    std::cout << "可以使用 ParaView 或其他VTK可视化工具打开查看。\n";
+    std::cout << "在ParaView中，可以通过 'fluid_neighbor_count' 和 'solid_neighbor_count' 查看邻居数分布。\n";
+}
+
 int main() {
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "MPS Baseline - NeighborListSearcher 功能测试\n";
@@ -523,6 +742,7 @@ int main() {
         testParticleSorting();
         testBoundaryParticles();
         testLargeCellSize();
+        testUniformCubeWithVTK();
         
         printSeparator("所有测试完成");
         std::cout << "\n测试总结:\n";
@@ -533,6 +753,7 @@ int main() {
         std::cout << "  - 粒子排序验证\n";
         std::cout << "  - 边界粒子测试\n";
         std::cout << "  - 大网格尺寸测试\n";
+        std::cout << "  - 均匀立方体粒子分布 + VTK输出\n";
         
     } catch (const std::exception& e) {
         std::cerr << "\n错误: " << e.what() << "\n";
