@@ -14,6 +14,24 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # third_party 目录用于包含第三方库（如 third_party/ini/SimpleIni.h）
 include_directories(${CMAKE_SOURCE_DIR}/third_party)
 
+# 配置fmt库（用于错误处理和格式化输出）
+# 优先查找系统已安装的fmt库
+find_package(fmt QUIET)
+if(NOT fmt_FOUND)
+    # 如果系统没有安装，则使用FetchContent下载
+    include(FetchContent)
+    # 使用commit hash而不是tag，更稳定可靠
+    FetchContent_Declare(
+      fmt
+      GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+      GIT_TAG        e69e5f977d458f2650bb346dadf2ad30c5320281  # fmt 10.2.1的commit hash
+      GIT_SHALLOW    TRUE    # 只克隆最新提交，加快下载速度
+    )
+    # 显示下载进度
+    set(FETCHCONTENT_QUIET OFF)
+    FetchContent_MakeAvailable(fmt)
+endif()
+
 # 核心源文件
 set(CORE_SOURCES
     src/core/Particle.cpp

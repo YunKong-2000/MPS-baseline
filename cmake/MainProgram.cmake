@@ -12,6 +12,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# 链接fmt库
+target_link_libraries(${PROJECT_NAME} PRIVATE fmt::fmt)
+
 # 复制数据目录和配置文件
 copy_data_directory(${PROJECT_NAME})
 file(COPY ${CMAKE_SOURCE_DIR}/config.ini DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
