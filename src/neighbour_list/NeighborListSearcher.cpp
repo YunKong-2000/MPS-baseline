@@ -106,7 +106,7 @@ void NeighborListSearcher::BuildNeighborList(FluidParticle& fluid_particles,
             if (i == j) {
               continue;  // 跳过自己
             }
-            double dist = ComputeDistance(fluid_particles.position[i],
+            double dist = mps::ComputeDistance(fluid_particles.position[i],
                                          fluid_particles.position[j]);
             if (dist < r_e) {
               fluid_particles.fluid_neighbour_list[i].push_back(j);
@@ -116,7 +116,7 @@ void NeighborListSearcher::BuildNeighborList(FluidParticle& fluid_particles,
           // 搜索固体粒子邻居（只搜索该网格中的粒子）
           const auto& solid_in_cell = solid_cell_particles[search_cell_index];
           for (int j : solid_in_cell) {
-            double dist = ComputeDistance(fluid_particles.position[i],
+            double dist = mps::ComputeDistance(fluid_particles.position[i],
                                          solid_particles.position[j]);
             if (dist < r_e) {
               fluid_particles.solid_neighbour_list[i].push_back(j);
@@ -186,14 +186,6 @@ int3 NeighborListSearcher::GetGridCoordinates(const double3& pos,
   grid_z = std::max(0, grid_z);
   
   return {grid_x, grid_y, grid_z};
-}
-
-double NeighborListSearcher::ComputeDistance(const double3& pos1,
-                                            const double3& pos2) const {
-  double dx = pos1[0] - pos2[0];
-  double dy = pos1[1] - pos2[1];
-  double dz = pos1[2] - pos2[2];
-  return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 void NeighborListSearcher::SortFluidParticlesByCellIndex(

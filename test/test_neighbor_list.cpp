@@ -7,6 +7,7 @@
 #include "../src/neighbour_list/NeighborListSearcher.hpp"
 #include "../src/core/Particle.hpp"
 #include "../src/core/FileOperator.hpp"
+#include "core/MPSUtils.h"
 
 using namespace mps;
 
@@ -17,13 +18,7 @@ void printSeparator(const std::string& title) {
     std::cout << std::string(60, '=') << "\n";
 }
 
-// 辅助函数：计算两点距离
-double computeDistance(const double3& pos1, const double3& pos2) {
-    double dx = pos1[0] - pos2[0];
-    double dy = pos1[1] - pos2[1];
-    double dz = pos1[2] - pos2[2];
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
-}
+// 使用公共工具函数，不再需要本地定义
 
 // 辅助函数：验证邻居列表的正确性
 bool verifyNeighborList(const FluidParticle& fluid_particles,
@@ -45,8 +40,8 @@ bool verifyNeighborList(const FluidParticle& fluid_particles,
                 all_correct = false;
                 continue;
             }
-            double dist = computeDistance(fluid_particles.position[i],
-                                         fluid_particles.position[j]);
+            double dist = mps::ComputeDistance(fluid_particles.position[i],
+                                               fluid_particles.position[j]);
             if (dist >= r_e) {
                 std::cout << "  错误: 粒子 " << i << " 和 " << j 
                           << " 的距离 " << dist << " 大于 r_e " << r_e << "\n";
@@ -62,8 +57,8 @@ bool verifyNeighborList(const FluidParticle& fluid_particles,
                 all_correct = false;
                 continue;
             }
-            double dist = computeDistance(fluid_particles.position[i],
-                                         solid_particles.position[j]);
+            double dist = mps::ComputeDistance(fluid_particles.position[i],
+                                               solid_particles.position[j]);
             if (dist >= r_e) {
                 std::cout << "  错误: 流体粒子 " << i << " 和固体粒子 " << j 
                           << " 的距离 " << dist << " 大于 r_e " << r_e << "\n";
@@ -450,7 +445,7 @@ void testBoundaryParticles() {
                   << fluid.position[i][2] << "): "
                   << fluid.fluid_neighbour_list[i].size() << " 个邻居\n";
         for (int j : fluid.fluid_neighbour_list[i]) {
-            double dist = computeDistance(fluid.position[i], fluid.position[j]);
+            double dist = mps::ComputeDistance(fluid.position[i], fluid.position[j]);
             std::cout << "    -> 粒子 " << j << ", 距离: " << dist << "\n";
         }
     }

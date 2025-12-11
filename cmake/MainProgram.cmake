@@ -4,6 +4,7 @@ add_executable(${PROJECT_NAME}
     ${CORE_SOURCES} # 核心模块
     ${CONFIG_SOURCES} # 配置模块
     ${NEIGHBOR_LIST_SOURCES} # 邻居列表模块
+    ${SURFACE_DETECTION_SOURCES} # 自由面判定模块
 )
 
 # 设置目标属性

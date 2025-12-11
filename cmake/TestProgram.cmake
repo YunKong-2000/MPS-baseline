@@ -20,6 +20,14 @@ add_executable(test_neighbor_list
     ${NEIGHBOR_LIST_SOURCES}
 )
 
+add_executable(test_surface_detection
+    test/test_surface_detection.cpp
+    ${CORE_SOURCES}
+    ${CONFIG_SOURCES}
+    ${NEIGHBOR_LIST_SOURCES}
+    ${SURFACE_DETECTION_SOURCES}
+)
+
 # 设置测试目标属性
 target_include_directories(test_particle PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -33,9 +41,14 @@ target_include_directories(test_neighbor_list PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+target_include_directories(test_surface_detection PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # 复制数据目录和配置文件
 copy_data_directory(test_particle)
 copy_data_directory(test_config)
 copy_data_directory(test_neighbor_list)
+copy_data_directory(test_surface_detection)
 file(COPY ${CMAKE_SOURCE_DIR}/config.ini DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 

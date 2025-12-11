@@ -1,6 +1,7 @@
 #pragma once
 #include "../core/Particle.hpp"
 #include "core/Types.h"
+#include "core/MPSUtils.h"
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -48,9 +49,6 @@ private:
   int3 GetGridCoordinates(const double3& pos,
                           const double3& domain_min,
                           double r_cell) const;
-
-  // 计算两点之间的距离
-  double ComputeDistance(const double3& pos1, const double3& pos2) const;
 
   // 根据网格索引对流体粒子进行排序（包括所有属性）
   void SortFluidParticlesByCellIndex(FluidParticle& fluid_particles,
