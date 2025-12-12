@@ -83,7 +83,7 @@ inline std::ostream& operator<<(std::ostream& os, const double3& vec) {
 // 其他工具函数
 // ============================================================================
 
-// 计算两点之间的欧氏距离
+// 计算两点之间的欧氏距离（三维）
 // 参数：
 //   pos1: 第一个粒子的位置
 //   pos2: 第二个粒子的位置
@@ -110,7 +110,7 @@ inline double WeightFunction(double distance, double smoothing_radius) {
   return (1.0 - r) * (1.0 - r);
 }
 
-// 计算向量的模长
+// 计算向量的模长（三维）
 // 参数：
 //   vec: 三维向量
 // 返回：向量的模长
@@ -118,7 +118,7 @@ inline double ComputeVectorMagnitude(const double3& vec) {
   return std::sqrt(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);
 }
 
-// 归一化向量
+// 归一化向量（三维）
 // 参数：
 //   vec: 待归一化的三维向量
 // 返回：归一化后的向量，如果输入向量为零向量则返回零向量
@@ -131,7 +131,7 @@ inline double3 NormalizeVector(const double3& vec) {
   }
 }
 
-// 计算两个向量的点积
+// 计算两个向量的点积（三维）
 // 参数：
 //   vec1: 第一个向量
 //   vec2: 第二个向量
