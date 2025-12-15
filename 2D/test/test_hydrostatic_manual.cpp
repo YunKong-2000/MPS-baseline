@@ -130,11 +130,93 @@ double2 ComputePressureGradient(
   return pressure_gradient;
 }
 
-// 输出压力梯度到VTK文件
-void WritePressureGradientToVTK(
+// 计算单个粒子的压力拉普拉斯算子
+double ComputePressureLaplacian(
+  int particle_idx,
+  const std::vector<FluidParticle>& fluid_particles,
+  const std::vector<SolidParticle>& solid_particles,
+  double smoothing_radius,
+  double rho,
+  double g) {
+
+// 计算系数矩阵
+Eigen::Matrix<double, 5, 5> corrective_matrix = Eigen::Matrix<double, 5, 5>::Zero();
+double2 pos_i = fluid_particles[particle_idx].position;
+
+// 计算流体邻域粒子的系数矩阵
+for (size_t j = 0; j < fluid_particles.size(); j++) {
+  double2 pos_j = fluid_particles[j].position;
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = std::sqrt(dx * dx + dy * dy);
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  double weight = pow(1 - dist / smoothing_radius, 2);
+  Eigen::Vector<double, 5> basis = ComputeBasisFunctions(dx, dy, dist, smoothing_radius);
+  corrective_matrix += weight * basis * basis.transpose();
+}
+
+// 计算固体邻域粒子的系数矩阵
+for (size_t j = 0; j < solid_particles.size(); j++) {
+  double2 pos_j = solid_particles[j].position;
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = std::sqrt(dx * dx + dy * dy);
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  double weight = pow(1 - dist / smoothing_radius, 2);
+  Eigen::Vector<double, 5> basis = ComputeBasisFunctionsForWall(
+      dx, dy, solid_particles[j].normal_vector.x, solid_particles[j].normal_vector.y, smoothing_radius);
+  corrective_matrix += weight * basis * basis.transpose();
+}
+
+// 求逆
+Eigen::Matrix<double, 5, 5> inverse_corrective_matrix = corrective_matrix.inverse();
+
+// 计算压力拉普拉斯算子
+double pressure_laplacian = 0;
+
+// 计算流体邻域粒子的压力拉普拉斯算子贡献
+for (size_t j = 0; j < fluid_particles.size(); j++) {
+  double2 pos_j = fluid_particles[j].position;
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = std::sqrt(dx * dx + dy * dy);
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  double weight = pow(1 - dist / smoothing_radius, 2);
+  double p_i = fluid_particles[particle_idx].pressure;
+  double p_j = fluid_particles[j].pressure;
+  double d_ij = (p_j - p_i) / dist;
+  Eigen::Vector<double, 5> basis = ComputeBasisFunctions(dx, dy, dist, smoothing_radius);
+  pressure_laplacian += weight * d_ij * (inverse_corrective_matrix.row(2) * basis)(0, 0);
+  pressure_laplacian += weight * d_ij * (inverse_corrective_matrix.row(3) * basis)(0, 0);
+}
+
+// 计算固体邻域粒子的压力拉普拉斯算子贡献
+for (size_t j = 0; j < solid_particles.size(); j++) {
+  double2 pos_j = solid_particles[j].position;
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double2 n = solid_particles[j].normal_vector;
+  double nn = sqrt(n.x * n.x + n.y * n.y);
+  double n_y = n.y / nn;
+  double dist = std::sqrt(dx * dx + dy * dy);
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  double d_ij = -rho * g * n_y;
+  double weight = pow(1 - dist / smoothing_radius, 2);
+  Eigen::Vector<double, 5> basis = ComputeBasisFunctionsForWall(
+      dx, dy, solid_particles[j].normal_vector.x, solid_particles[j].normal_vector.y, smoothing_radius);
+  pressure_laplacian += weight * d_ij * (inverse_corrective_matrix.row(2) * basis)(0, 0);
+  pressure_laplacian += weight * d_ij * (inverse_corrective_matrix.row(3) * basis)(0, 0);
+}
+
+return pressure_laplacian;
+}
+
+// 输出到VTK文件
+void WriteToVTK(
     const std::string& filename,
     const std::vector<FluidParticle>& fluid_particles,
-    const std::vector<double2>& pressure_gradients) {
+    const std::vector<double2>& pressure_gradients,
+    const std::vector<double>& pressure_laplacians) {
   
   std::ofstream file(filename);
   if (!file.is_open()) {
@@ -209,6 +291,13 @@ void WritePressureGradientToVTK(
   for (size_t i = 0; i < fluid_particles.size(); ++i) {
     file << fluid_particles[i].position.y << "\n";
   }
+
+  // 写入压力拉普拉斯算子
+  file << "SCALARS pressure_laplacian float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (size_t i = 0; i < fluid_particles.size(); ++i) {
+    file << pressure_laplacians[i] << "\n";
+  }
   
   file.close();
   std::cout << "已输出VTK文件: " << filename << std::endl;
@@ -278,11 +367,18 @@ int main(int argc, char** argv) {
       std::cout << "  已计算 " << (i + 1) << " / " << fluid_particles.size() << " 个粒子" << std::endl;
     }
   }
+
+  // 计算所有流体粒子的压力拉普拉斯算子
+  std::vector<double> pressure_laplacians(fluid_particles.size());
+  for (size_t i = 0; i < fluid_particles.size(); ++i) {
+    pressure_laplacians[i] = ComputePressureLaplacian(
+        i, fluid_particles, solid_particles, smoothing_radius, rho, g);
+  }
   
   // 输出到VTK文件
   std::cout << "\n输出压力梯度到VTK文件..." << std::endl;
-  WritePressureGradientToVTK("hydrostatic_pressure_gradient_manual.vtk", 
-                              fluid_particles, pressure_gradients);
+  WriteToVTK("hydrostatic_pressure_gradient_manual.vtk", 
+                              fluid_particles, pressure_gradients, pressure_laplacians);
   
   // 统计信息
   std::cout << "\n压力梯度统计信息:" << std::endl;

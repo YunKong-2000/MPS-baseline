@@ -103,217 +103,94 @@ double2 ComputeGradient(
   return {grad_x, grad_y};
 }
 
-// 调试函数：输出单个粒子的corrective matrix和梯度计算过程
-void DebugGradientCalculation(
-    int particle_idx,
-    const std::vector<double>& scalar_field,
-    const FluidParticle& fluid_particles,
-    const SolidParticle& solid_particles,
-    const Eigen::Matrix<double, 5, 5>& corrective_matrix,
-    double smoothing_radius,
-    double rho,
-    double g,
-    std::ofstream& debug_file) {
+// 计算标量场的拉普拉斯算子（使用LSMPS corrective matrix方法）
+// 参数：
+//   particle_idx: 粒子索引
+//   scalar_field: 标量场值（如压力）
+//   fluid_particles: 流体粒子对象
+//   solid_particles: 固体粒子对象
+//   corrective_matrix: corrective matrix (5x5)
+//   smoothing_radius: 平滑半径
+//   rho: 流体密度
+//   g: 重力加速度大小
+// 返回：拉普拉斯算子
+double ComputePressureLaplacian(
+  int particle_idx,
+  const std::vector<double>& scalar_field,
+  const FluidParticle& fluid_particles,
+  const SolidParticle& solid_particles,
+  const Eigen::Matrix<double, 5, 5>& corrective_matrix,
+  double smoothing_radius,
+  double rho,
+  double g 
+  ) {
+
+const double2& pos_i = fluid_particles.position[particle_idx];
+double phi_i = scalar_field[particle_idx];
+
+// 提取corrective matrix的前两行（C1和C2）
+Eigen::Matrix<double, 1, 5> C3 = corrective_matrix.row(2);  // x方向
+Eigen::Matrix<double, 1, 5> C4 = corrective_matrix.row(3);  // y方向
+
+double pressure_laplacian = 0.0;
+
+// 处理流体邻域粒子
+for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+  const double2& pos_j = fluid_particles.position[j];
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = ComputeDistance(pos_i, pos_j);
   
-  const double2& pos_i = fluid_particles.position[particle_idx];
-  double phi_i = scalar_field[particle_idx];
+  if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
   
-  debug_file << "\n========================================\n";
-  debug_file << "粒子 " << particle_idx << " 的梯度计算调试信息\n";
-  debug_file << "========================================\n";
-  debug_file << "位置: (" << pos_i.x << ", " << pos_i.y << ")\n";
-  debug_file << "压力值 phi_i: " << phi_i << " Pa\n";
-  debug_file << "平滑半径 r_e: " << smoothing_radius << " m\n";
+  double phi_j = scalar_field[j];
+  double d_ij = (phi_j - phi_i) / dist;  // d_ij = (phi_j - phi_i) / r_ij
+  double weight = WeightFunction(dist, smoothing_radius);
   
-  // 输出corrective matrix
-  debug_file << "\nCorrective Matrix (5x5):\n";
-  for (int row = 0; row < 5; ++row) {
-    for (int col = 0; col < 5; ++col) {
-      debug_file << std::setw(15) << std::fixed << std::setprecision(8) 
-                 << corrective_matrix(row, col);
-    }
-    debug_file << "\n";
-  }
+  // 计算基函数（与 manual 测试保持一致）
+  Eigen::Matrix<double, 5, 1> P;
+  P << dx / dist,                                    // x/r
+       dy / dist,                                    // y/r
+       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
+       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
+       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
   
-  // 提取C1和C2
-  Eigen::Matrix<double, 1, 5> C1 = corrective_matrix.row(0);
-  Eigen::Matrix<double, 1, 5> C2 = corrective_matrix.row(1);
+  // 计算拉普拉斯算子贡献 
+  pressure_laplacian += weight * d_ij * (C3 * P)(0, 0);
+  pressure_laplacian += weight * d_ij * (C4 * P)(0, 0);
+}
+
+// 处理固体邻域粒子（壁面粒子）
+for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+  const double2& pos_j = solid_particles.position[j];
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = ComputeDistance(pos_i, pos_j);
   
-  debug_file << "\nC1 (x方向): ";
-  for (int i = 0; i < 5; ++i) {
-    debug_file << std::setw(15) << std::fixed << std::setprecision(8) << C1(0, i);
-  }
-  debug_file << "\n";
+  if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
   
-  debug_file << "C2 (y方向): ";
-  for (int i = 0; i < 5; ++i) {
-    debug_file << std::setw(15) << std::fixed << std::setprecision(8) << C2(0, i);
-  }
-  debug_file << "\n";
+  // 获取壁面法向量并归一化
+  const double2& normal = solid_particles.normal_vector[j];
+  double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+  double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
   
-  double grad_x = 0.0;
-  double grad_y = 0.0;
+  double d_ij = -rho * g * n_y;
+  double weight = WeightFunction(dist, smoothing_radius);
   
-  // 处理流体邻域粒子
-  debug_file << "\n--- 流体邻域粒子 ---\n";
-  debug_file << "邻域粒子数: " << fluid_particles.fluid_neighbour_list[particle_idx].size() << "\n";
-  debug_file << std::setw(6) << "索引" 
-              << std::setw(15) << "dx" 
-              << std::setw(15) << "dy"
-              << std::setw(15) << "距离"
-              << std::setw(15) << "phi_j"
-              << std::setw(15) << "d_ij"
-              << std::setw(15) << "权重"
-              << std::setw(15) << "贡献_x"
-              << std::setw(15) << "贡献_y" << "\n";
+  // 壁面基函数
+  Eigen::Matrix<double, 5, 1> P;
+  P << normal.x,                                    // n_x
+       normal.y,                                    // n_y
+       2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
+       2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
+       (normal.y * dx + normal.x * dy) / smoothing_radius;  // (n_x*x + n_y*y)/r_e
   
-  int count = 0;
-  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
-    if (count >= 5) {  // 只输出前5个的详细信息
-      debug_file << "... (还有 " 
-                 << (fluid_particles.fluid_neighbour_list[particle_idx].size() - 5) 
-                 << " 个粒子)\n";
-      break;
-    }
-    
-    const double2& pos_j = fluid_particles.position[j];
-    double dx = pos_j.x - pos_i.x;
-    double dy = pos_j.y - pos_i.y;
-    double dist = ComputeDistance(pos_i, pos_j);
-    
-    if (dist < 1e-10) continue;
-    
-    double phi_j = scalar_field[j];
-    double d_ij = (phi_j - phi_i) / dist;
-    double weight = WeightFunction(dist, smoothing_radius);
-    
-    // 计算基函数（与 manual 测试保持一致）
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
-    
-    // 计算 C1*P 和 C2*P
-    double C1P = (C1 * P)(0, 0);
-    double C2P = (C2 * P)(0, 0);
-    
-    // 计算梯度贡献
-    double contrib_x = weight * d_ij * C1P;
-    double contrib_y = weight * d_ij * C2P;
-    grad_x += contrib_x;
-    grad_y += contrib_y;
-    
-    debug_file << std::setw(6) << j
-                << std::setw(15) << std::fixed << std::setprecision(8) << dx
-                << std::setw(15) << dy
-                << std::setw(15) << dist
-                << std::setw(15) << phi_j
-                << std::setw(15) << d_ij
-                << std::setw(15) << weight
-                << std::setw(15) << contrib_x
-                << std::setw(15) << contrib_y << "\n";
-    
-    // 输出前3个粒子的详细基函数信息
-    if (count < 3) {
-      debug_file << "  基函数 P: [" << P(0, 0) << ", " << P(1, 0) << ", " 
-                 << P(2, 0) << ", " << P(3, 0) << ", " 
-                 << P(4, 0) << "]\n";
-      debug_file << "  C1*P = " << C1P << ", C2*P = " << C2P << "\n";
-      debug_file << "  weight*d_ij = " << (weight * d_ij) << "\n";
-    }
-    
-    ++count;
-  }
-  
-  debug_file << "\n流体邻域粒子总贡献: (" << grad_x << ", " << grad_y << ")\n";
-  
-  // 处理固体邻域粒子（壁面粒子）
-  debug_file << "\n--- 固体邻域粒子（壁面） ---\n";
-  debug_file << "邻域粒子数: " << fluid_particles.solid_neighbour_list[particle_idx].size() << "\n";
-  debug_file << std::setw(6) << "索引" 
-              << std::setw(15) << "dx" 
-              << std::setw(15) << "dy"
-              << std::setw(15) << "距离"
-                << std::setw(15) << "法向量x"
-                << std::setw(15) << "法向量y"
-                << std::setw(15) << "n_y"
-                << std::setw(15) << "d_ij"
-              << std::setw(15) << "权重"
-              << std::setw(15) << "贡献_x"
-              << std::setw(15) << "贡献_y" << "\n";
-  
-  double grad_x_solid = 0.0;
-  double grad_y_solid = 0.0;
-  count = 0;
-  
-  for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
-    if (count >= 10) {  // 只输出前10个
-      debug_file << "... (还有 " 
-                 << (fluid_particles.solid_neighbour_list[particle_idx].size() - 10) 
-                 << " 个粒子)\n";
-      break;
-    }
-    
-    const double2& pos_j = solid_particles.position[j];
-    double dx = pos_j.x - pos_i.x;
-    double dy = pos_j.y - pos_i.y;
-    double dist = ComputeDistance(pos_i, pos_j);
-    
-    if (dist < 1e-10 || dist > smoothing_radius) continue;
-    
-    // 获取壁面法向量并归一化（与 manual 测试保持一致）
-    const double2& normal = solid_particles.normal_vector[j];
-    double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
-    double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
-    
-    // 使用与 manual 测试一致的 d_ij 计算方式
-    double d_ij = -rho * g * n_y;
-    double weight = WeightFunction(dist, smoothing_radius);
-    
-    // 壁面基函数（与 manual 测试保持一致）
-    Eigen::Matrix<double, 5, 1> P;
-    P << normal.x,                                    // n_x
-         normal.y,                                    // n_y
-         2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
-         2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
-         (normal.x * dy + normal.y * dx) / smoothing_radius;  // (n_x*dy + n_y*dx)/r_e
-    
-    // 计算梯度贡献
-    double contrib_x = weight * d_ij * (C1 * P)(0, 0);
-    double contrib_y = weight * d_ij * (C2 * P)(0, 0);
-    grad_x_solid += contrib_x;
-    grad_y_solid += contrib_y;
-    
-    debug_file << std::setw(6) << j
-                << std::setw(15) << std::fixed << std::setprecision(8) << dx
-                << std::setw(15) << dy
-                << std::setw(15) << dist
-                << std::setw(15) << normal.x
-                << std::setw(15) << normal.y
-                << std::setw(15) << n_y
-                << std::setw(15) << d_ij
-                << std::setw(15) << d_ij
-                << std::setw(15) << weight
-                << std::setw(15) << contrib_x
-                << std::setw(15) << contrib_y << "\n";
-    
-    ++count;
-  }
-  
-  debug_file << "\n固体邻域粒子总贡献: (" << grad_x_solid << ", " << grad_y_solid << ")\n";
-  
-  // 最终梯度
-  double final_grad_x = grad_x + grad_x_solid;
-  double final_grad_y = grad_y + grad_y_solid;
-  
-  debug_file << "\n--- 最终结果 ---\n";
-  debug_file << "计算出的梯度: (" << final_grad_x << ", " << final_grad_y << ") Pa/m\n";
-  debug_file << "理论梯度: (0.0, -9800.0) Pa/m\n";
-  debug_file << "误差: (" << (final_grad_x - 0.0) << ", " 
-             << (final_grad_y - (-9800.0)) << ") Pa/m\n";
-  debug_file << "========================================\n\n";
+  // 计算梯度贡献
+  pressure_laplacian += weight * d_ij * (C3 * P)(0, 0);
+  pressure_laplacian += weight * d_ij * (C4 * P)(0, 0);
+}
+
+return pressure_laplacian;
 }
 
 // 生成静水压强测试场景
@@ -433,7 +310,8 @@ void WritePressureToVTK(
     const FluidParticle& fluid_particles,
     const std::vector<double>& theoretical_pressure,
     const std::vector<double2>& computed_gradient,
-    const std::vector<double2>& theoretical_gradient) {
+    const std::vector<double2>& theoretical_gradient,
+    const std::vector<double>& computed_laplacian) {
   
   std::ofstream file(filename);
   if (!file.is_open()) {
@@ -553,14 +431,14 @@ void WritePressureToVTK(
   for (int i = 0; i < num_particles; ++i) {
     file << theoretical_gradient[i].x << "\n";
   }
-  
-  // 写入压力梯度Y分量（理论值）
-  file << "SCALARS theoretical_pressure_gradient_y float\n";
+
+  // 写入压力拉普拉斯算子
+  file << "SCALARS pressure_laplacian float\n";
   file << "LOOKUP_TABLE default\n";
   for (int i = 0; i < num_particles; ++i) {
-    file << theoretical_gradient[i].y << "\n";
+    file << computed_laplacian[i] << "\n";
   }
-  
+
   // 写入表面类型
   if (fluid_particles.surface_type.size() >= static_cast<size_t>(num_particles)) {
     file << "SCALARS surface_type int\n";
@@ -670,8 +548,9 @@ void WriteWallParticlesToVTK(
       file << vel.x << " " << vel.y << " 0.0\n";
     }
   }
-  
+
   file.close();
+
   std::cout << "  已输出壁面粒子VTK文件: " << filename << std::endl;
 }
 
@@ -808,7 +687,8 @@ int main() {
   std::cout << "\n计算压力梯度..." << std::endl;
   std::vector<double2> computed_gradient(fluid_particles.particle_num);
   std::vector<double2> theoretical_gradient(fluid_particles.particle_num);
-  
+  std::vector<double> computed_laplacian(fluid_particles.particle_num);
+  std::vector<double> theoretical_laplacian(fluid_particles.particle_num);
   for (int i = 0; i < fluid_particles.particle_num; ++i) {
     // 计算梯度
     computed_gradient[i] = ComputeGradient(
@@ -820,6 +700,10 @@ int main() {
     // dp/dy = rho * g * d(water_height - y)/dy = rho * g * (-1) = -rho * g
     // 所以y方向梯度应该是负数（压力随y增加而减小）
     theoretical_gradient[i] = {0.0, -rho * g};
+    computed_laplacian[i] = ComputePressureLaplacian(
+        i, theoretical_pressure, fluid_particles, solid_particles,
+        matrices[i], smoothing_radius, rho, g);
+    theoretical_laplacian[i] = 0;
   }
   
   // 统计误差
@@ -922,67 +806,13 @@ int main() {
       fluid_particles,
       theoretical_pressure,
       computed_gradient,
-      theoretical_gradient);
+      theoretical_gradient,
+      computed_laplacian);
   
   // 输出壁面粒子到VTK文件
   WriteWallParticlesToVTK(
       "wall_particles.vtk",
       solid_particles);
-  
-  // 输出一个内部粒子的详细调试信息
-  std::cout << "\n输出梯度计算调试信息..." << std::endl;
-  std::ofstream debug_file("gradient_debug.txt");
-  if (debug_file.is_open()) {
-    // 找到一个内部粒子进行调试（选择中间位置的粒子，避免边界影响）
-    int debug_particle_idx = -1;
-    int num_inner_found = 0;
-    for (int i = 0; i < fluid_particles.particle_num; ++i) {
-      if (fluid_particles.surface_type[i] == SurfaceType::INNER) {
-        num_inner_found++;
-        // 选择第10个内部粒子（避免边界影响，且有足够的邻域粒子）
-        if (num_inner_found == 10) {
-          debug_particle_idx = i;
-          break;
-        }
-      }
-    }
-    
-    // 如果没找到第10个，就找第一个
-    if (debug_particle_idx < 0) {
-      for (int i = 0; i < fluid_particles.particle_num; ++i) {
-        if (fluid_particles.surface_type[i] == SurfaceType::INNER) {
-          debug_particle_idx = i;
-          break;
-        }
-      }
-    }
-    
-    if (debug_particle_idx >= 0) {
-      std::cout << "  调试粒子索引: " << debug_particle_idx << std::endl;
-      std::cout << "  粒子位置: (" << fluid_particles.position[debug_particle_idx].x 
-                << ", " << fluid_particles.position[debug_particle_idx].y << ")" << std::endl;
-      std::cout << "  粒子压力: " << theoretical_pressure[debug_particle_idx] << " Pa" << std::endl;
-      std::cout << "  流体邻域数: " << fluid_particles.fluid_neighbour_list[debug_particle_idx].size() << std::endl;
-      std::cout << "  固体邻域数: " << fluid_particles.solid_neighbour_list[debug_particle_idx].size() << std::endl;
-      
-      DebugGradientCalculation(
-          debug_particle_idx,
-          theoretical_pressure,
-          fluid_particles,
-          solid_particles,
-          matrices[debug_particle_idx],
-          smoothing_radius,
-          rho,
-          g,
-          debug_file);
-      std::cout << "  已输出调试信息到: gradient_debug.txt" << std::endl;
-    } else {
-      std::cout << "  警告：未找到内部粒子进行调试" << std::endl;
-    }
-    debug_file.close();
-  } else {
-    std::cerr << "  错误：无法打开调试文件 gradient_debug.txt" << std::endl;
-  }
   
   std::cout << "\n测试完成!" << std::endl;
   
