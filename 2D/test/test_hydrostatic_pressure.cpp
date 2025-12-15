@@ -663,7 +663,7 @@ int main() {
   int num_valid_matrix = 0;
   for (int i = 0; i < fluid_particles.particle_num; ++i) {
     matrices[i] = corrective_matrix_calculator.ComputeCorrectiveMatrix(
-        i, fluid_particles, solid_particles, smoothing_radius);
+        i, fluid_particles, solid_particles, smoothing_radius, true);
     
     // 检查是否是单位矩阵
     bool is_identity = true;

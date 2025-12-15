@@ -8,7 +8,8 @@ CorrectiveMatrix::ComputeCorrectiveMatrix(
     int particle_idx,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
-    double smoothing_radius) {
+    double smoothing_radius,
+    bool border_condition) {
   
   // 统计邻域粒子总数
   int num_fluid_neighbors = fluid_particles.fluid_neighbour_list[particle_idx].size();
@@ -23,7 +24,7 @@ CorrectiveMatrix::ComputeCorrectiveMatrix(
   
   // 构建系数矩阵A和权重矩阵W
   Eigen::MatrixXd C = BuildCoefficientMatrix(
-      particle_idx, fluid_particles, solid_particles, smoothing_radius);
+      particle_idx, fluid_particles, solid_particles, smoothing_radius, border_condition);
     
   // 检查矩阵是否可逆
   if (!IsMatrixInvertible(C)) {
@@ -40,7 +41,8 @@ CorrectiveMatrix::BuildCoefficientMatrix(
     int particle_idx,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
-    double smoothing_radius) {
+    double smoothing_radius,
+    bool border_condition) {
   
   const double2& pos_i = fluid_particles.position[particle_idx];
   
@@ -72,8 +74,13 @@ CorrectiveMatrix::BuildCoefficientMatrix(
     
     // 获取壁面法向量
     const double2& normal = solid_particles.normal_vector[j];
-    Eigen::Vector<double, BASIS_SIZE> basis = ComputeBasisFunctionsForWall(
-        dx, dy, normal.x, normal.y, smoothing_radius);
+    Eigen::Vector<double, BASIS_SIZE> basis;
+    if (border_condition) {
+      basis = ComputeBasisFunctionsForWall(
+          dx, dy, normal.x, normal.y, smoothing_radius);
+    } else {
+      basis = ComputeBasisFunctions(dx, dy, smoothing_radius);
+    }
     C += weight * basis * basis.transpose();
   }
   
