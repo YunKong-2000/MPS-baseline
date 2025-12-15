@@ -51,17 +51,19 @@ double2 ComputeGradient(
     double dy = pos_j.y - pos_i.y;
     double dist = ComputeDistance(pos_i, pos_j);
     
-    if (dist < 1e-10) continue;  // 避免除零
+    if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
     
     double phi_j = scalar_field[j];
     double d_ij = (phi_j - phi_i) / dist;  // d_ij = (phi_j - phi_i) / r_ij
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数
-    double x_norm = dx / smoothing_radius;
-    double y_norm = dy / smoothing_radius;
+    // 计算基函数（与 manual 测试保持一致）
     Eigen::Matrix<double, 5, 1> P;
-    P << x_norm, y_norm, x_norm * x_norm, y_norm * y_norm, x_norm * y_norm;
+    P << dx / dist,                                    // x/r
+         dy / dist,                                    // y/r
+         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
+         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
+         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
     
     // 计算梯度贡献
     grad_x += weight * d_ij * (C1 * P)(0, 0);
@@ -75,29 +77,23 @@ double2 ComputeGradient(
     double dy = pos_j.y - pos_i.y;
     double dist = ComputeDistance(pos_i, pos_j);
     
-    if (dist < 1e-10) continue;  // 避免除零
+    if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
     
-    // 获取壁面法向量
+    // 获取壁面法向量并归一化
     const double2& normal = solid_particles.normal_vector[j];
+    double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+    double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
     
-    // 计算壁面粒子压力：pj = pi - rho*g*(y_j - y_i)
-    // 其中 pi 是当前流体粒子压力，rho 是流体密度，g 是重力加速度大小
-    // y_j 是壁面粒子的y坐标，y_i 是流体粒子的y坐标
-    double dy_wall = pos_j.y - pos_i.y;
-    double phi_j = phi_i - rho * g * dy_wall;
-    
-    double d_ij = (phi_j - phi_i) / dist;
+    double d_ij = -rho * g * n_y;
     double weight = WeightFunction(dist, smoothing_radius);
-    
-    double x_norm = dx / smoothing_radius;
-    double y_norm = dy / smoothing_radius;
     
     // 壁面基函数
     Eigen::Matrix<double, 5, 1> P;
-    P << normal.x, normal.y,
-         2.0 * normal.x * x_norm,
-         2.0 * normal.y * y_norm,
-         (normal.x * x_norm + normal.y * y_norm);
+    P << normal.x,                                    // n_x
+         normal.y,                                    // n_y
+         2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
+         2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
+         (normal.y * dx + normal.x * dy) / smoothing_radius;  // (n_x*x + n_y*y)/r_e
     
     // 计算梯度贡献
     grad_x += weight * d_ij * (C1 * P)(0, 0);
@@ -191,11 +187,13 @@ void DebugGradientCalculation(
     double d_ij = (phi_j - phi_i) / dist;
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数
-    double x_norm = dx / smoothing_radius;
-    double y_norm = dy / smoothing_radius;
+    // 计算基函数（与 manual 测试保持一致）
     Eigen::Matrix<double, 5, 1> P;
-    P << x_norm, y_norm, x_norm * x_norm, y_norm * y_norm, x_norm * y_norm;
+    P << dx / dist,                                    // x/r
+         dy / dist,                                    // y/r
+         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
+         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
+         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
     
     // 计算 C1*P 和 C2*P
     double C1P = (C1 * P)(0, 0);
@@ -219,9 +217,9 @@ void DebugGradientCalculation(
     
     // 输出前3个粒子的详细基函数信息
     if (count < 3) {
-      debug_file << "  基函数 P: [" << x_norm << ", " << y_norm << ", " 
-                 << (x_norm*x_norm) << ", " << (y_norm*y_norm) << ", " 
-                 << (x_norm*y_norm) << "]\n";
+      debug_file << "  基函数 P: [" << P(0, 0) << ", " << P(1, 0) << ", " 
+                 << P(2, 0) << ", " << P(3, 0) << ", " 
+                 << P(4, 0) << "]\n";
       debug_file << "  C1*P = " << C1P << ", C2*P = " << C2P << "\n";
       debug_file << "  weight*d_ij = " << (weight * d_ij) << "\n";
     }
@@ -240,9 +238,8 @@ void DebugGradientCalculation(
               << std::setw(15) << "距离"
                 << std::setw(15) << "法向量x"
                 << std::setw(15) << "法向量y"
-                << std::setw(15) << "dy_wall"
-                << std::setw(15) << "phi_j"
-              << std::setw(15) << "d_ij"
+                << std::setw(15) << "n_y"
+                << std::setw(15) << "d_ij"
               << std::setw(15) << "权重"
               << std::setw(15) << "贡献_x"
               << std::setw(15) << "贡献_y" << "\n";
@@ -264,27 +261,24 @@ void DebugGradientCalculation(
     double dy = pos_j.y - pos_i.y;
     double dist = ComputeDistance(pos_i, pos_j);
     
-    if (dist < 1e-10) continue;
+    if (dist < 1e-10 || dist > smoothing_radius) continue;
     
-    // 获取壁面法向量
+    // 获取壁面法向量并归一化（与 manual 测试保持一致）
     const double2& normal = solid_particles.normal_vector[j];
+    double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+    double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
     
-    // 计算壁面粒子压力：pj = pi - rho*g*(y_j - y_i)
-    double dy_wall = pos_j.y - pos_i.y;
-    double phi_j = phi_i - rho * g * dy_wall;
-    
-    double d_ij = (phi_j - phi_i) / dist;
+    // 使用与 manual 测试一致的 d_ij 计算方式
+    double d_ij = -rho * g * n_y;
     double weight = WeightFunction(dist, smoothing_radius);
     
-    double x_norm = dx / smoothing_radius;
-    double y_norm = dy / smoothing_radius;
-    
-    // 壁面基函数
+    // 壁面基函数（与 manual 测试保持一致）
     Eigen::Matrix<double, 5, 1> P;
-    P << normal.x, normal.y,
-         2.0 * normal.x * x_norm,
-         2.0 * normal.y * y_norm,
-         (normal.x * x_norm + normal.y * y_norm);
+    P << normal.x,                                    // n_x
+         normal.y,                                    // n_y
+         2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
+         2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
+         (normal.x * dy + normal.y * dx) / smoothing_radius;  // (n_x*dy + n_y*dx)/r_e
     
     // 计算梯度贡献
     double contrib_x = weight * d_ij * (C1 * P)(0, 0);
@@ -298,8 +292,8 @@ void DebugGradientCalculation(
                 << std::setw(15) << dist
                 << std::setw(15) << normal.x
                 << std::setw(15) << normal.y
-                << std::setw(15) << dy_wall
-                << std::setw(15) << phi_j
+                << std::setw(15) << n_y
+                << std::setw(15) << d_ij
                 << std::setw(15) << d_ij
                 << std::setw(15) << weight
                 << std::setw(15) << contrib_x

@@ -54,6 +54,7 @@ CorrectiveMatrix::BuildCoefficientMatrix(
     double dx = pos_j.x - pos_i.x;
     double dy = pos_j.y - pos_i.y;
     double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) continue;
     double weight = WeightFunction(dist, smoothing_radius);
     Eigen::Vector<double, BASIS_SIZE> basis = ComputeBasisFunctions(dx, dy, smoothing_radius);
     C += weight * basis * basis.transpose();
@@ -66,6 +67,7 @@ CorrectiveMatrix::BuildCoefficientMatrix(
     double dx = pos_j.x - pos_i.x;
     double dy = pos_j.y - pos_i.y;
     double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) continue;
     double weight = WeightFunction(dist, smoothing_radius);
     
     // 获取壁面法向量
@@ -102,17 +104,14 @@ CorrectiveMatrix::ComputeBasisFunctionsForWall(
     double normal_x, double normal_y,
     double smoothing_radius) {
   
-  // 归一化相对位置
-  double x_norm = dx / smoothing_radius;
-  double y_norm = dy / smoothing_radius;
-  
-  // 壁面基函数：n_x, n_y, 2*n_x*x/r_e, 2*n_y*y/r_e, (n_x*x + n_y*y)/r_e
+  // 壁面基函数：n_x, n_y, 2*n_x*x/r_e, 2*n_y*y/r_e, (n_x*dy + n_y*dx)/r_e
+  // 与 manual 测试保持一致
   Eigen::Vector<double, BASIS_SIZE> basis;
   basis[0] = normal_x;                                    // n_x
   basis[1] = normal_y;                                    // n_y
-  basis[2] = 2.0 * normal_x * x_norm;                     // 2*n_x*x/r_e
-  basis[3] = 2.0 * normal_y * y_norm;                     // 2*n_y*y/r_e
-  basis[4] = (normal_x * x_norm + normal_y * y_norm);     // (n_x*x + n_y*y)/r_e
+  basis[2] = 2.0 * normal_x * dx / smoothing_radius;      // 2*n_x*x/r_e
+  basis[3] = 2.0 * normal_y * dy / smoothing_radius;      // 2*n_y*y/r_e
+  basis[4] = (normal_x * dy + normal_y * dx) / smoothing_radius;  // (n_x*dy + n_y*dx)/r_e
   
   return basis;
 }

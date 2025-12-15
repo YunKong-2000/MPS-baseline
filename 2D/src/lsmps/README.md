@@ -34,7 +34,7 @@ Corrective matrix的计算基于最小二乘方法：
      其中 $x = x_j - x_i$, $y = y_j - y_i$ 是相对位置，$r_e$ 是平滑半径。
    
    - **对于固体邻域粒子（壁面粒子）**，基函数为：
-     $$P=[\mathbf{n}_x, \mathbf{n}_y, \frac{2\mathbf{n}_x x_{ij}}{r_e}, \frac{2\mathbf{n}_y y_{ij}}{r_e}, \frac{\mathbf{n}_x x_{ij} + \mathbf{n}_y y_{ij}}{r_e}]$$
+     $$P=[\mathbf{n}_x, \mathbf{n}_y, \frac{2\mathbf{n}_x x_{ij}}{r_e}, \frac{2\mathbf{n}_y y_{ij}}{r_e}, \frac{\mathbf{n}_x y_{ij} + \mathbf{n}_y x_{ij}}{r_e}]$$
      其中 $\mathbf{n}_x, \mathbf{n}_y$ 是壁面法向量的x和y分量，$x_{ij} = x_j - x_i$, $y_{ij} = y_j - y_i$ 是相对位置。
 
 2. **计算权重$w$**：使用MPS权重函数计算每个邻域粒子的权重
