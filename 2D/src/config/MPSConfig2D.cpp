@@ -1,4 +1,5 @@
 #include "MPSConfig2D.hpp"
+#include "core/ErrorHandling.h"
 
 namespace mps2D {
 
@@ -42,52 +43,39 @@ bool MPSConfig2D::LoadFromConfig(const SimpleIni& config) {
 }
 
 bool MPSConfig2D::Validate() const {
-    // 验证时间步长
-    if (simulation_config_.time_step <= 0.0) {
+    try {
+        // 验证时间步长
+        CHECK_POSITIVE(simulation_config_.time_step, "时间步长 (TimeStep)");
+
+        // 验证总时间
+        CHECK_POSITIVE(simulation_config_.total_time, "总时间 (TotalTime)");
+
+        // 验证最大迭代次数
+        CHECK_POSITIVE(simulation_config_.max_iterations, "最大迭代次数 (MaxIterations)");
+
+        // 验证密度
+        CHECK_POSITIVE(simulation_config_.density, "密度 (Density)");
+
+        // 验证动力学粘性系数
+        CHECK_NON_NEGATIVE(simulation_config_.kinematic_viscosity, "动力学粘性系数 (KinematicViscosity)");
+
+        // 验证粒子间距
+        CHECK_POSITIVE(particle_config_.particle_spacing, "粒子间距 (ParticleSpacing)");
+
+        // 验证粒子半径
+        CHECK_POSITIVE(particle_config_.particle_radius, "粒子半径 (ParticleRadius)");
+
+        // 验证平滑半径
+        CHECK_POSITIVE(particle_config_.smoothing_radius, "平滑半径 (SmoothingRadius)");
+
+        // 验证网格单元大小
+        CHECK_POSITIVE(particle_config_.cell_size, "网格单元大小 (CellSize)");
+
+        return true;
+    } catch (const MPSException& e) {
+        // 参数验证失败，返回false
         return false;
     }
-
-    // 验证总时间
-    if (simulation_config_.total_time <= 0.0) {
-        return false;
-    }
-
-    // 验证最大迭代次数
-    if (simulation_config_.max_iterations <= 0) {
-        return false;
-    }
-
-    // 验证密度
-    if (simulation_config_.density <= 0.0) {
-        return false;
-    }
-
-    // 验证动力学粘性系数
-    if (simulation_config_.kinematic_viscosity < 0.0) {
-        return false;
-    }
-
-    // 验证粒子间距
-    if (particle_config_.particle_spacing <= 0.0) {
-        return false;
-    }
-
-    // 验证粒子半径
-    if (particle_config_.particle_radius <= 0.0) {
-        return false;
-    }
-
-    // 验证平滑半径
-    if (particle_config_.smoothing_radius <= 0.0) {
-        return false;
-    }
-
-    // 验证网格单元大小
-    if (particle_config_.cell_size <= 0.0) {
-        return false;
-    }
-
-    return true;
 }
 
 } // namespace mps2D
