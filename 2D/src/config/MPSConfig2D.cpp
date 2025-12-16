@@ -28,6 +28,16 @@ bool MPSConfig2D::LoadFromConfig(const SimpleIni& config) {
                                                          simulation_config_.gravity_x);
     simulation_config_.gravity_y = config.GetDoubleValue("Simulation", "GravityY", 
                                                          simulation_config_.gravity_y);
+    
+    // 加载时间步管理参数
+    simulation_config_.min_time_step = config.GetDoubleValue("Simulation", "MinTimeStep", 
+                                                             simulation_config_.min_time_step);
+    simulation_config_.max_time_step = config.GetDoubleValue("Simulation", "MaxTimeStep", 
+                                                             simulation_config_.max_time_step);
+    simulation_config_.max_cfl = config.GetDoubleValue("Simulation", "MaxCFL", 
+                                                       simulation_config_.max_cfl);
+    simulation_config_.output_interval = config.GetDoubleValue("Simulation", "OutputInterval", 
+                                                               simulation_config_.output_interval);
 
     // 加载粒子配置
     particle_config_.particle_spacing = config.GetDoubleValue("Particle", "ParticleSpacing", 
@@ -70,6 +80,21 @@ bool MPSConfig2D::Validate() const {
 
         // 验证网格单元大小
         CHECK_POSITIVE(particle_config_.cell_size, "网格单元大小 (CellSize)");
+        
+        // 验证时间步管理参数
+        CHECK_POSITIVE(simulation_config_.min_time_step, "最小时间步 (MinTimeStep)");
+        CHECK_POSITIVE(simulation_config_.max_time_step, "最大时间步 (MaxTimeStep)");
+        CHECK_POSITIVE(simulation_config_.max_cfl, "最大CFL数 (MaxCFL)");
+        CHECK_POSITIVE(simulation_config_.output_interval, "输出文件间隔 (OutputInterval)");
+        
+        // 验证时间步范围合理性
+        if (simulation_config_.min_time_step >= simulation_config_.max_time_step) {
+            throw MPSException("最小时间步必须小于最大时间步");
+        }
+        if (simulation_config_.time_step < simulation_config_.min_time_step || 
+            simulation_config_.time_step > simulation_config_.max_time_step) {
+            throw MPSException("初始时间步必须在最小和最大时间步范围内");
+        }
 
         return true;
     } catch (const MPSException& e) {
