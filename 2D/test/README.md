@@ -12,6 +12,9 @@
 4. **test_file_operator** - FileOperator 文件读写模块测试
 5. **test_neighbor_list** - NeighborListSearcher 邻居列表搜索器测试
 6. **test_surface_detection** - SurfaceDetector 自由面检测测试
+7. **test_hydrostatic_manual** - LSMPS压力梯度计算参考实现（手动实现）
+8. **test_hydrostatic_pressure** - 静水压力梯度测试（使用CorrectiveMatrix接口）
+9. **test_pipe_flow** - 管道流动测试（速度梯度、散度、拉普拉斯算子）
 
 ---
 
@@ -156,9 +159,15 @@ cd build/bin
 
 ```bash
 cd build/bin
-./test_types          # 运行基础类型测试
-./test_mps_utils      # 运行工具函数测试
-./test_particle       # 运行粒子类功能测试
+./test_types                    # 运行基础类型测试
+./test_mps_utils                # 运行工具函数测试
+./test_particle                 # 运行粒子类功能测试
+./test_file_operator            # 运行文件读写模块测试
+./test_neighbor_list            # 运行邻居列表搜索器测试
+./test_surface_detection        # 运行自由面检测测试
+./test_hydrostatic_manual       # 运行LSMPS压力梯度参考实现测试
+./test_hydrostatic_pressure     # 运行静水压力梯度测试
+./test_pipe_flow                # 运行管道流动测试
 ```
 
 ---
@@ -421,8 +430,268 @@ cd build/bin
 
 ---
 
+## test_hydrostatic_manual - LSMPS压力梯度计算参考实现
+
+### 用途
+
+手动实现的LSMPS（Least Square Moving Particle Semi-implicit）压力梯度计算，作为参考实现。该测试程序直接实现了LSMPS算法的核心逻辑，包括corrective matrix的计算和压力梯度的求解，用于验证`CorrectiveMatrix`类的实现是否正确。
+
+### 运行方法
+
+```bash
+cd build/bin
+./test_hydrostatic_manual
+```
+
+### 测试内容
+
+#### 1. 静水压力场设置
+- 创建矩形通道中的流体粒子（均匀分布）
+- 创建底部和顶部壁面粒子
+- 设置静水压力分布：`p(y) = ρ * g * (h - y)`，其中h为通道高度
+
+#### 2. LSMPS算法实现
+- **基函数计算**：
+  - 流体粒子基函数：`[x/r, y/r, x²/(r·r_e), y²/(r·r_e), x·y/(r·r_e)]`
+  - 壁面粒子基函数：`[n_x, n_y, 2·n_x·x/r_e, 2·n_y·y/r_e, (n_x·y + n_y·x)/r_e]`
+- **权重函数**：`w(r) = (1 - r/r_e)²`
+- **Corrective Matrix构建**：通过加权基函数外积构建系数矩阵
+- **压力梯度计算**：使用corrective matrix计算压力梯度
+
+#### 3. 结果验证
+- 计算所有流体粒子的压力梯度
+- 与理论值对比：理论梯度为 `∇p = (0, -ρ·g)`
+- 输出误差统计
+
+#### 4. VTK输出
+- 输出所有流体粒子的压力梯度信息到`hydrostatic_pressure_gradient_manual.vtk`
+- 包含计算值和理论值的对比
+
+### 算法特点
+
+- **手动实现**：不依赖`CorrectiveMatrix`类，直接实现LSMPS算法
+- **参考实现**：作为其他测试程序的参考基准
+- **完整流程**：包含从基函数计算到梯度求解的完整流程
+
+### 测试输出
+
+测试结果文件会生成在 `build/bin/` 目录下：
+- `hydrostatic_pressure_gradient_manual.vtk` - 压力梯度VTK文件
+
+VTK文件包含：
+- 粒子位置和速度
+- `computed_gradient` 向量：计算的压力梯度
+- `theoretical_gradient` 向量：理论压力梯度 `(0, -ρ·g)`
+- `gradient_error` 向量：梯度误差
+- `y_coordinate` 标量：Y坐标（用于分析）
+
+---
+
+## test_hydrostatic_pressure - 静水压力梯度测试
+
+### 用途
+
+使用`CorrectiveMatrix`类接口测试LSMPS压力梯度计算。该测试程序验证`CorrectiveMatrix`类的实现是否正确，通过对比`test_hydrostatic_manual`的结果来验证接口的正确性。
+
+### 运行方法
+
+```bash
+cd build/bin
+./test_hydrostatic_pressure
+```
+
+### 测试内容
+
+#### 1. 静水压力场设置
+- 创建矩形通道中的流体粒子（均匀分布）
+- 创建底部和顶部壁面粒子（带法向量）
+- 设置静水压力分布：`p(y) = ρ * g * (h - y)`
+- 构建邻居列表
+
+#### 2. Corrective Matrix计算
+- 使用`CorrectiveMatrix::ComputeCorrectiveMatrix`接口计算corrective matrix
+- 支持边界条件参数（`border_condition`）
+- 验证corrective matrix的有效性
+
+#### 3. 压力梯度计算
+- 使用corrective matrix的前两行（C1和C2）计算梯度
+- 处理流体邻域粒子和固体邻域粒子
+- 对于壁面粒子，使用壁面基函数和边界条件
+
+#### 4. 压力拉普拉斯算子计算
+- 使用corrective matrix的第3行和第4行（C3和C4）计算拉普拉斯算子
+- 计算 `∇²p = ∂²p/∂x² + ∂²p/∂y²`
+- 对于静水压力，理论拉普拉斯算子应为0
+
+#### 5. 结果验证
+- 与理论梯度对比：`∇p = (0, -ρ·g)`
+- 与理论拉普拉斯算子对比：`∇²p = 0`
+- 输出误差统计（平均误差、最大误差）
+
+#### 6. VTK输出
+- 输出压力、压力梯度、压力拉普拉斯算子到`hydrostatic_pressure.vtk`
+- 包含计算值和理论值的对比
+
+### 算法特点
+
+- **接口调用**：使用`CorrectiveMatrix`类的标准接口
+- **边界条件**：支持第一类和第二类边界条件
+- **完整验证**：验证梯度计算和拉普拉斯算子计算
+
+### 测试输出
+
+测试结果文件会生成在 `build/bin/` 目录下：
+- `hydrostatic_pressure.vtk` - 压力场VTK文件
+
+VTK文件包含：
+- 粒子位置和速度
+- `pressure` 标量：压力值
+- `computed_gradient` 向量：计算的压力梯度
+- `theoretical_gradient` 向量：理论压力梯度
+- `gradient_error` 向量：梯度误差
+- `computed_laplacian` 标量：计算的拉普拉斯算子
+- `theoretical_laplacian` 标量：理论拉普拉斯算子（0）
+- `laplacian_error` 标量：拉普拉斯算子误差
+
+### 与test_hydrostatic_manual的关系
+
+- `test_hydrostatic_manual` 是手动实现的参考版本
+- `test_hydrostatic_pressure` 使用标准接口，验证接口实现的正确性
+- 两个测试的结果应该一致，用于验证`CorrectiveMatrix`类的正确性
+
+---
+
+## test_pipe_flow - 管道流动测试
+
+### 用途
+
+测试LSMPS方法在管道流动（Poiseuille流动）中的速度梯度、散度和拉普拉斯算子计算。该测试程序验证LSMPS方法在处理向量场（速度场）时的正确性，包括梯度张量、散度和拉普拉斯算子的计算。
+
+### 运行方法
+
+```bash
+cd build/bin
+./test_pipe_flow
+```
+
+### 测试内容
+
+#### 1. Poiseuille流动设置
+- 创建矩形通道中的流体粒子（均匀分布）
+- 创建底部和顶部壁面粒子（无滑移边界条件，速度为零）
+- 设置Poiseuille速度分布：`v_x(y) = v_max * (1 - (2y/h - 1)²)`，`v_y = 0`
+- 构建邻居列表
+
+#### 2. Corrective Matrix计算
+- 使用`CorrectiveMatrix::ComputeCorrectiveMatrix`接口计算corrective matrix
+- 使用第一类边界条件（Dirichlet边界条件，`border_condition = false`）
+- 壁面速度为零（无滑移边界条件）
+
+#### 3. 速度梯度计算
+- 使用corrective matrix的前两行（C1和C2）计算速度梯度张量
+- 计算四个分量：`∂v_x/∂x`, `∂v_x/∂y`, `∂v_y/∂x`, `∂v_y/∂y`
+- 处理流体邻域粒子和固体邻域粒子
+- 对于壁面粒子，使用标准基函数（第一类边界条件）
+
+#### 4. 速度散度计算
+- 使用速度梯度计算散度：`∇·v = ∂v_x/∂x + ∂v_y/∂y`
+- 对于不可压缩流动，理论散度应为0
+
+#### 5. 速度拉普拉斯算子计算
+- 使用corrective matrix的第3行和第4行（C3和C4）计算拉普拉斯算子
+- 计算 `∇²v = (∇²v_x, ∇²v_y)`
+- 对于Poiseuille流动：
+  - `∇²v_x = -8·v_max/h²`
+  - `∇²v_y = 0`
+
+#### 6. 结果验证
+- 与理论梯度对比：
+  - `∂v_x/∂x = 0`
+  - `∂v_x/∂y = -4·v_max·(2y/h - 1)/h`
+  - `∂v_y/∂x = 0`
+  - `∂v_y/∂y = 0`
+- 与理论散度对比：`∇·v = 0`
+- 与理论拉普拉斯算子对比：`∇²v_x = -8·v_max/h²`, `∇²v_y = 0`
+- 输出误差统计（平均误差、最大误差）
+
+#### 7. VTK输出
+- 输出速度、速度梯度、散度、拉普拉斯算子到`pipe_flow.vtk`
+- 输出壁面粒子到`pipe_flow_wall_particles.vtk`
+- 包含计算值和理论值的对比
+
+### 算法特点
+
+- **向量场处理**：处理速度向量场，计算梯度张量
+- **边界条件**：使用第一类边界条件（Dirichlet），壁面速度为零
+- **多物理量**：同时计算梯度、散度和拉普拉斯算子
+- **完整验证**：验证所有计算的正确性
+
+### 测试参数
+
+测试中使用的关键参数：
+- `channel_height`: 通道高度（默认0.5 m）
+- `channel_length`: 通道长度（默认1.0 m）
+- `particle_spacing`: 粒子间距（默认0.02 m）
+- `v_max`: 最大速度（默认1.0 m/s）
+- `smoothing_radius`: 平滑半径（默认2.1 * particle_spacing）
+
+### 测试输出
+
+测试结果文件会生成在 `build/bin/` 目录下：
+- `pipe_flow.vtk` - 流体粒子VTK文件
+- `pipe_flow_wall_particles.vtk` - 壁面粒子VTK文件
+
+`pipe_flow.vtk`文件包含：
+- 粒子位置和速度
+- `theoretical_velocity` 向量：理论速度
+- `computed_velocity` 向量：计算速度
+- `computed_gradient` 张量：计算的速度梯度张量
+- `theoretical_gradient` 张量：理论速度梯度张量
+- `gradient_error` 张量：梯度误差
+- `computed_divergence` 标量：计算的散度
+- `theoretical_divergence` 标量：理论散度（0）
+- `divergence_error` 标量：散度误差
+- `computed_velocity_laplacian` 向量：计算的拉普拉斯算子
+- `theoretical_velocity_laplacian` 向量：理论拉普拉斯算子
+- `laplacian_error` 向量：拉普拉斯算子误差
+- `laplacian_error_magnitude` 标量：拉普拉斯算子误差大小
+- `y_coordinate` 标量：Y坐标（用于分析）
+
+### VTK文件可视化
+
+在ParaView中打开VTK文件后，可以：
+- 查看速度向量分布
+- 显示速度梯度张量的各个分量
+- 查看散度分布（应该接近0）
+- 查看拉普拉斯算子分布
+- 分析边界附近的误差分布
+
+### 理论背景
+
+Poiseuille流动是管道中的层流流动，速度分布为：
+- `v_x(y) = v_max * (1 - (2y/h - 1)²)`
+- `v_y = 0`
+
+其中：
+- `v_max` 是管道中心的最大速度
+- `h` 是通道高度
+- `y` 是从底部壁面开始的距离
+
+理论梯度：
+- `∂v_x/∂x = 0`
+- `∂v_x/∂y = -4·v_max·(2y/h - 1)/h`
+- `∂v_y/∂x = 0`
+- `∂v_y/∂y = 0`
+
+理论拉普拉斯算子：
+- `∇²v_x = ∂²v_x/∂x² + ∂²v_x/∂y² = 0 + (-8·v_max/h²) = -8·v_max/h²`
+- `∇²v_y = 0`
+
+---
+
 ## 未来扩展
 
 计划添加的测试功能：
 - 配置文件读取测试（2D版本）
+- 其他流动场景的测试（如Couette流动、Stokes流动等）
 
