@@ -132,6 +132,116 @@ VelocityGradient ComputeVelocityGradient(
   return grad;
 }
 
+// 计算向量场的拉普拉斯算子（使用LSMPS corrective matrix方法）
+// 参数：
+//   particle_idx: 粒子索引
+//   vector_field: 向量场值（速度）
+//   fluid_particles: 流体粒子对象
+//   solid_particles: 固体粒子对象
+//   corrective_matrix: corrective matrix (5x5)
+//   smoothing_radius: 平滑半径
+// 返回：拉普拉斯算子
+
+struct VelocityLaplacian {
+  double laplacian_x;  // ∂^2v_x/∂x^2 + ∂^2v_x/∂y^2
+  double laplacian_y;  // ∂^2v_y/∂x^2 + ∂^2v_y/∂y^2
+};
+
+VelocityLaplacian ComputeVelocityLaplacian(
+  int particle_idx,
+  const std::vector<double2>& vector_field,
+  const FluidParticle& fluid_particles,
+  const SolidParticle& solid_particles,
+  const Eigen::Matrix<double, 5, 5>& corrective_matrix,
+  double smoothing_radius) {
+
+const double2& pos_i = fluid_particles.position[particle_idx];
+const double2& v_i = vector_field[particle_idx];
+
+// 提取corrective matrix）
+Eigen::Matrix<double, 1, 5> C3 = corrective_matrix.row(2);  // x方向
+Eigen::Matrix<double, 1, 5> C4 = corrective_matrix.row(3);  // y方向
+
+VelocityLaplacian laplacian;
+laplacian.laplacian_x = 0.0;
+laplacian.laplacian_y = 0.0;
+
+// 处理流体邻域粒子
+for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+  const double2& pos_j = fluid_particles.position[j];
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = ComputeDistance(pos_i, pos_j);
+  
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  
+  const double2& v_j = vector_field[j];
+  double dv_x = v_j.x - v_i.x;
+  double dv_y = v_j.y - v_i.y;
+  double d_ij_x = dv_x / dist;  // (v_x_j - v_x_i) / r_ij
+  double d_ij_y = dv_y / dist;  // (v_y_j - v_y_i) / r_ij
+  double weight = WeightFunction(dist, smoothing_radius);
+  
+  // 计算基函数
+  Eigen::Matrix<double, 5, 1> P;
+  P << dx / dist,                                    // x/r
+       dy / dist,                                    // y/r
+       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
+       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
+       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+  
+  // 计算拉普拉斯算子贡献
+  double scalar_laplacian = 2.0 / smoothing_radius;
+  double C3P = (C3 * P)(0, 0);
+  double C4P = (C4 * P)(0, 0);
+  
+  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C3P;  // ∂^2v_x/∂x^2
+  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C4P;  // ∂^2v_x/∂y^2
+  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C3P;  // ∂^2v_y/∂x^2 
+  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C4P;  // ∂^2v_y/∂y^2
+}
+
+// 处理固体邻域粒子（壁面粒子）
+// 对于管道流动，壁面处速度为零（无滑移边界条件，第一类边界条件）
+// 第一类边界条件使用标准基函数，而不是壁面基函数
+for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+  const double2& pos_j = solid_particles.position[j];
+  double dx = pos_j.x - pos_i.x;
+  double dy = pos_j.y - pos_i.y;
+  double dist = ComputeDistance(pos_i, pos_j);
+  
+  if (dist < 1e-10 || dist > smoothing_radius) continue;
+  
+  // 壁面处速度为零（第一类边界条件：Dirichlet边界条件）
+  const double2 v_wall = {0.0, 0.0};
+  double dv_x = v_wall.x - v_i.x;
+  double dv_y = v_wall.y - v_i.y;
+  double d_ij_x = dv_x / dist;
+  double d_ij_y = dv_y / dist;
+  double weight = WeightFunction(dist, smoothing_radius);
+  
+  // 第一类边界条件使用标准基函数（与流体粒子相同）
+  Eigen::Matrix<double, 5, 1> P;
+  P << dx / dist,                                    // x/r
+       dy / dist,                                    // y/r
+       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
+       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
+       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+  
+  // 计算梯度贡献
+  double scalar_laplacian = 2.0 / smoothing_radius;
+  double C3P = (C3 * P)(0, 0);
+  double C4P = (C4 * P)(0, 0);
+  
+  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C3P;
+  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C3P;
+  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C4P;
+  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C4P;
+}
+
+return laplacian;
+}
+
 // 计算速度散度（使用LSMPS corrective matrix方法）
 // 散度 = ∂v_x/∂x + ∂v_y/∂y
 double ComputeVelocityDivergence(
@@ -276,6 +386,20 @@ double ComputeTheoreticalDivergence() {
   return 0.0;
 }
 
+// 计算理论速度拉普拉斯算子
+// 对于Poiseuille流动：v_x(y) = v_max * (1 - (2y/h - 1)^2)
+// ∂^2v_x/∂x^2 = 0
+// ∂^2v_x/∂y^2 = -8*v_max/h^2
+// ∂^2v_y/∂x^2 = 0
+// ∂^2v_y/∂y^2 = 0
+VelocityLaplacian ComputeTheoreticalVelocityLaplacian(
+    double y, double channel_height, double v_max) {
+  VelocityLaplacian laplacian;
+  laplacian.laplacian_x = -8.0 * v_max / (channel_height * channel_height);  // ∂^2v_x/∂x^2 + ∂^2v_x/∂y^2 = 0 + (-8*v_max/h^2)
+  laplacian.laplacian_y = 0.0;  // ∂^2v_y/∂x^2 + ∂^2v_y/∂y^2 = 0 + 0
+  return laplacian;
+}
+
 // 输出速度数据到VTK文件
 void WriteVelocityToVTK(
     const std::string& filename,
@@ -285,7 +409,9 @@ void WriteVelocityToVTK(
     const std::vector<VelocityGradient>& computed_gradient,
     const std::vector<VelocityGradient>& theoretical_gradient,
     const std::vector<double>& computed_divergence,
-    const std::vector<double>& theoretical_divergence) {
+    const std::vector<double>& theoretical_divergence,
+    const std::vector<VelocityLaplacian>& computed_laplacian,
+    const std::vector<VelocityLaplacian>& theoretical_laplacian) {
   
   std::ofstream file(filename);
   if (!file.is_open()) {
@@ -413,6 +539,66 @@ void WriteVelocityToVTK(
   for (int i = 0; i < num_particles; ++i) {
     double error = computed_divergence[i] - theoretical_divergence[i];
     file << error << "\n";
+  }
+
+  // 写入拉普拉斯算子（计算值）- 向量形式
+  file << "VECTORS computed_velocity_laplacian float\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << computed_laplacian[i].laplacian_x << " " 
+         << computed_laplacian[i].laplacian_y << " 0.0\n";
+  }
+  
+  // 写入拉普拉斯算子X分量（计算值）
+  file << "SCALARS computed_laplacian_x float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << computed_laplacian[i].laplacian_x << "\n";
+  }
+  
+  // 写入拉普拉斯算子Y分量（计算值）
+  file << "SCALARS computed_laplacian_y float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << computed_laplacian[i].laplacian_y << "\n";
+  }
+  
+  // 写入拉普拉斯算子（理论值）- 向量形式
+  file << "VECTORS theoretical_velocity_laplacian float\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << theoretical_laplacian[i].laplacian_x << " " 
+         << theoretical_laplacian[i].laplacian_y << " 0.0\n";
+  }
+  
+  // 写入拉普拉斯算子X分量（理论值）
+  file << "SCALARS theoretical_laplacian_x float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << theoretical_laplacian[i].laplacian_x << "\n";
+  }
+  
+  // 写入拉普拉斯算子Y分量（理论值）
+  file << "SCALARS theoretical_laplacian_y float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_particles; ++i) {
+    file << theoretical_laplacian[i].laplacian_y << "\n";
+  }
+  
+  // 写入拉普拉斯算子误差
+  file << "VECTORS laplacian_error float\n";
+  for (int i = 0; i < num_particles; ++i) {
+    double error_x = computed_laplacian[i].laplacian_x - theoretical_laplacian[i].laplacian_x;
+    double error_y = computed_laplacian[i].laplacian_y - theoretical_laplacian[i].laplacian_y;
+    file << error_x << " " << error_y << " 0.0\n";
+  }
+  
+  // 写入拉普拉斯算子误差大小
+  file << "SCALARS laplacian_error_magnitude float\n";
+  file << "LOOKUP_TABLE default\n";
+  for (int i = 0; i < num_particles; ++i) {
+    double error_x = computed_laplacian[i].laplacian_x - theoretical_laplacian[i].laplacian_x;
+    double error_y = computed_laplacian[i].laplacian_y - theoretical_laplacian[i].laplacian_y;
+    double error_mag = std::sqrt(error_x * error_x + error_y * error_y);
+    file << error_mag << "\n";
   }
   
   // 写入Y坐标
@@ -663,6 +849,21 @@ int main() {
         matrices[i], smoothing_radius);
     theoretical_divergence[i] = ComputeTheoreticalDivergence();
   }
+
+  // 计算速度拉普拉斯算子
+  std::cout << "\n计算速度拉普拉斯算子..." << std::endl;
+  std::vector<VelocityLaplacian> computed_laplacian(fluid_particles.particle_num);
+  std::vector<VelocityLaplacian> theoretical_laplacian(fluid_particles.particle_num);
+  
+  for (int i = 0; i < fluid_particles.particle_num; ++i) {
+    computed_laplacian[i] = ComputeVelocityLaplacian(
+        i, computed_velocity, fluid_particles, solid_particles,
+        matrices[i], smoothing_radius);
+    
+    double y = fluid_particles.position[i].y;
+    theoretical_laplacian[i] = ComputeTheoreticalVelocityLaplacian(
+        y, channel_height, v_max);
+  }
   
   // 统计误差
   std::cout << "\n速度梯度误差统计:" << std::endl;
@@ -734,6 +935,38 @@ int main() {
   std::cout << "  最大散度误差: " << max_error_div << " 1/s" << std::endl;
   std::cout << "  理论散度: 0.0 1/s（不可压缩流动）" << std::endl;
   
+  // 拉普拉斯算子误差统计
+  std::cout << "\n速度拉普拉斯算子误差统计:" << std::endl;
+  double total_error_lap_x = 0.0, total_error_lap_y = 0.0;
+  double max_error_lap_x = 0.0, max_error_lap_y = 0.0;
+  
+  for (int i = 0; i < fluid_particles.particle_num; ++i) {
+    if (fluid_particles.surface_type[i] == SurfaceType::INNER) {
+      double error_x = std::abs(computed_laplacian[i].laplacian_x - theoretical_laplacian[i].laplacian_x);
+      double error_y = std::abs(computed_laplacian[i].laplacian_y - theoretical_laplacian[i].laplacian_y);
+      
+      total_error_lap_x += error_x;
+      total_error_lap_y += error_y;
+      
+      if (error_x > max_error_lap_x) max_error_lap_x = error_x;
+      if (error_y > max_error_lap_y) max_error_lap_y = error_y;
+    }
+  }
+  
+  double avg_error_lap_x = total_error_lap_x / num_valid;
+  double avg_error_lap_y = total_error_lap_y / num_valid;
+  
+  std::cout << "  统计粒子数（内部粒子）: " << num_valid << std::endl;
+  std::cout << "  ∇²v_x 平均误差: " << avg_error_lap_x << " 1/(m²·s)" << std::endl;
+  std::cout << "  ∇²v_y 平均误差: " << avg_error_lap_y << " 1/(m²·s)" << std::endl;
+  std::cout << "  ∇²v_x 最大误差: " << max_error_lap_x << " 1/(m²·s)" << std::endl;
+  std::cout << "  ∇²v_y 最大误差: " << max_error_lap_y << " 1/(m²·s)" << std::endl;
+  
+  // 计算理论拉普拉斯算子值（用于参考）
+  double theoretical_lap_x = -8.0 * v_max / (channel_height * channel_height);
+  std::cout << "  理论 ∇²v_x: " << theoretical_lap_x << " 1/(m²·s)" << std::endl;
+  std::cout << "  理论 ∇²v_y: 0.0 1/(m²·s)" << std::endl;
+  
   // 输出到VTK文件
   std::cout << "\n输出VTK文件..." << std::endl;
   WriteVelocityToVTK(
@@ -744,7 +977,9 @@ int main() {
       computed_gradient,
       theoretical_gradient,
       computed_divergence,
-      theoretical_divergence);
+      theoretical_divergence,
+      computed_laplacian,
+      theoretical_laplacian);
   
   // 输出壁面粒子到VTK文件
   WriteWallParticlesToVTK(
