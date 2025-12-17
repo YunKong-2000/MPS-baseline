@@ -29,6 +29,23 @@ $$
 \end{align*}
 $$
 
+### 自由面粒子
+
+$$
+\begin{align*}
+    \langle \Delta p \rangle_i &= \frac{4}{n_0 \lambda} \sum_{j \in \mathrm{fluid}} (p_j - p_i)w_{ij} - \frac{4}{n_0 \lambda}\left(n_{i}^{'} - n_{i}^{*}\right)p_i
+\end{align*}
+$$
+
+其中：
+
+$$
+\begin{cases}
+    n_{i}^{'} = \max(n_{i}^{*}, \tilde{n}_{i}) \\
+    \tilde{n}_{i} = n_0 + 0.1\sum_{j \neq i}^{N_r} (w_{ij} - w_{l_0})
+\end{cases}
+$$
+
 ## 速度散度离散
 
 ### 远离壁面内部粒子
@@ -49,6 +66,14 @@ $$
 \end{align*}
 $$
 
+### 自由面粒子
+
+$$
+\begin{align*}
+    \langle \nabla \cdot \mathbf{u} \rangle_i &= \frac{2}{n_0} \sum_{j \neq i} \left[\frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \cdot \frac{\mathbf{r}_{ij}}{r_{ij}} w_{ij}\right]
+\end{align*}
+$$
+
 ## 代数式方程
 
 ### 远离壁面内部粒子
@@ -62,6 +87,17 @@ $$
 $$
 \begin{align*}
     &\left(-\frac{2}{r_e \rho} \sum_{j \in \mathrm{fluid}} \frac{w_{ij}}{r_{ij}} [\mathbf{C}_3 + \mathbf{C}_4] \mathbf{P}_{ij}\right) p_i + \sum_{j \in \mathrm{fluid}} \left(\frac{2}{r_e \rho} \frac{w_{ij}}{r_{ij}} [\mathbf{C}_3 + \mathbf{C}_4] \mathbf{P}_{ij}\right) p_j \\
-    &\quad = \frac{1}{\Delta t} \sum_{j \in \mathrm{fluid}} w_{ij} \frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \begin{bmatrix} \mathbf{C}_1 \\ \mathbf{C}_2 \end{bmatrix} \mathbf{P}_{ij} + \frac{1}{\Delta t} \frac{2}{r_e \rho} \sum_{j \in \mathrm{wall}} w_{ij} (\rho \mathbf{n}_{\mathrm{wall}} \cdot \mathbf{g}) [\mathbf{C}_3 + \mathbf{C}_4] \mathbf{P}_{ij}
+    &= \frac{1}{\Delta t} \sum_{j \in \mathrm{fluid}} w_{ij} \frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \begin{bmatrix} \mathbf{C}_1 \\ \mathbf{C}_2 \end{bmatrix} \mathbf{P}_{ij} \\
+    &\quad + \frac{1}{\Delta t} \sum_{j \in \mathrm{wall}} w_{ij} \frac{\mathbf{u}_{\mathrm{wall}} - \mathbf{u}_i}{r_{ij}} \begin{bmatrix} \mathbf{C}_1 \\ \mathbf{C}_2 \end{bmatrix} \mathbf{P}_{ij} \\
+    &\quad + \frac{2}{r_e \rho} \sum_{j \in \mathrm{wall}} w_{ij} (\rho \mathbf{n}_{\mathrm{wall}} \cdot \mathbf{g}) [\mathbf{C}_3 + \mathbf{C}_4] \mathbf{P}_{ij}
+\end{align*}
+$$
+
+### 自由面粒子
+
+$$
+\begin{align*}
+    &\left(-\frac{4}{n_0 \lambda \rho} \sum_{j \neq i} w_{ij}\right) p_i + \sum_{j \neq i} \left(\frac{4}{n_0 \lambda \rho} w_{ij}\right) p_j \\
+    &\quad = \frac{4}{n_0 \lambda \rho}\left(n_{i}^{'} - n_{i}^{*}\right) + \frac{2}{n_0 \Delta t} \sum_{j \neq i} \left[\frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \cdot \frac{\mathbf{r}_{ij}}{r_{ij}} w_{ij}\right]
 \end{align*}
 $$
