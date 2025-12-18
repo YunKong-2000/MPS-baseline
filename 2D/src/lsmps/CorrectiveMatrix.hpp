@@ -39,22 +39,6 @@ public:
       double smoothing_radius,
       bool border_condition = false);
 
-private:
-  // 构建系数矩阵C
-  // 参数：
-  //   particle_idx: 粒子索引
-  //   fluid_particles: 流体粒子对象
-  //   solid_particles: 固体粒子对象
-  //   smoothing_radius: 平滑半径
-  //   border_condition: 边界条件类型，false表示第一类边界条件，true表示第二类边界条件
-  // 返回：系数矩阵C（5x5）
-  Eigen::MatrixXd BuildCoefficientMatrix(
-      int particle_idx,
-      const FluidParticle& fluid_particles,
-      const SolidParticle& solid_particles,
-      double smoothing_radius,
-      bool border_condition = false);
-
   // 计算基函数值（用于流体邻域粒子）
   // 参数：
   //   dx, dy: 相对于中心粒子的相对位置
@@ -73,6 +57,22 @@ private:
       double dx, double dy,
       double normal_x, double normal_y,
       double smoothing_radius);
+
+private:
+  // 构建系数矩阵C
+  // 参数：
+  //   particle_idx: 粒子索引
+  //   fluid_particles: 流体粒子对象
+  //   solid_particles: 固体粒子对象
+  //   smoothing_radius: 平滑半径
+  //   border_condition: 边界条件类型，false表示第一类边界条件，true表示第二类边界条件
+  // 返回：系数矩阵C（5x5）
+  Eigen::MatrixXd BuildCoefficientMatrix(
+      int particle_idx,
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      double smoothing_radius,
+      bool border_condition = false);
 
   // 检查矩阵是否可逆
   // 参数：
