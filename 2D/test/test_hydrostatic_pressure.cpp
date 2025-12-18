@@ -4,6 +4,7 @@
 #include "core/MPSUtils.h"
 #include "../src/neighbour_list/NeighborListSearcher.hpp"
 #include "../src/surface_detection/SurfaceDetector.hpp"
+#include "../src/PPE/PPEMatrixBuilder.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -101,6 +102,72 @@ double2 ComputeGradient(
   }
   
   return {grad_x, grad_y};
+}
+
+// 计算PPE系数矩阵的对角线元素
+// 参数：
+//   particle_idx: 粒子索引
+//   fluid_particles: 流体粒子对象
+//   solid_particles: 固体粒子对象
+//   corrective_matrix: corrective matrix (5x5)
+//   smoothing_radius: 平滑半径
+//   density: 流体密度
+// 返回：对角线元素值
+// 根据README.md，对角线元素公式：
+// A_{ii} = -(2/(r_e*ρ)) * Σ_{j∈fluid} (w_ij/r_ij) * [C_3 + C_4] * P_ij
+double ComputeDiagonalCoefficient(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const Eigen::Matrix<double, 5, 5>& corrective_matrix,
+    double smoothing_radius,
+    double density) {
+  
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  
+  // 提取corrective matrix的行向量
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3 = corrective_matrix.row(2);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4 = corrective_matrix.row(3);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4 = C3 + C4;
+  
+  // 系数因子
+  double coeff_factor = 2.0 / (smoothing_radius * density);
+  
+  // 创建CorrectiveMatrix实例用于计算基函数
+  CorrectiveMatrix corrective_matrix_calc;
+  
+  // 初始化对角线系数累加
+  double diag_sum = 0.0;
+  
+  // 遍历流体邻域粒子（只考虑流体邻域粒子，壁面粒子不参与对角线系数计算）
+  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+    const double2& pos_j = fluid_particles.position[j];
+    
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+    
+    double weight = WeightFunction(dist, smoothing_radius);
+    
+    // 使用第一类边界条件的基函数（用于流体粒子）
+    Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+    
+    // 计算公共项：(w_ij / r_ij) * [C_3 + C_4] * P_ij
+    double common_coeff = (weight / dist) * (C3_plus_C4 * basis)(0, 0);
+    
+    // 累加对角线系数
+    diag_sum += common_coeff;
+  }
+  
+  // 对角线系数 = -coeff_factor * diag_sum
+  double diag_coeff = -coeff_factor * diag_sum;
+  
+  return diag_coeff;
 }
 
 // 计算标量场的拉普拉斯算子（使用LSMPS corrective matrix方法）
@@ -305,13 +372,16 @@ double ComputeTheoreticalPressure(double rho, double g, double h) {
 //   theoretical_pressure: 理论压力
 //   computed_gradient: 计算出的梯度
 //   theoretical_gradient: 理论梯度
+//   computed_laplacian: 计算出的拉普拉斯算子
+//   diagonal_coefficients: 对角线元素
 void WritePressureToVTK(
     const std::string& filename,
     const FluidParticle& fluid_particles,
     const std::vector<double>& theoretical_pressure,
     const std::vector<double2>& computed_gradient,
     const std::vector<double2>& theoretical_gradient,
-    const std::vector<double>& computed_laplacian) {
+    const std::vector<double>& computed_laplacian,
+    const std::vector<double>& diagonal_coefficients) {
   
   std::ofstream file(filename);
   if (!file.is_open()) {
@@ -455,6 +525,16 @@ void WritePressureToVTK(
     file << fluid_particles.position[i].y << "\n";
   }
   
+  // 写入对角线元素（PPE系数矩阵）
+  if (diagonal_coefficients.size() >= static_cast<size_t>(num_particles)) {
+    file << "SCALARS diagonal_coefficient float\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int i = 0; i < num_particles; ++i) {
+      file << std::scientific << std::setprecision(6) 
+           << diagonal_coefficients[i] << "\n";
+    }
+  }
+  
   file.close();
   std::cout << "  已输出VTK文件: " << filename << std::endl;
 }
@@ -566,12 +646,12 @@ int main() {
   const double container_height = 1.0;  // 容器高度 (m)
   const double water_height = 0.5;      // 水位高度 (m)
   
-  // 粒子参数（目标约10000个粒子）
+  // 粒子参数（与test_ppe_hydrostatic.cpp保持一致）
   // 总粒子数 ≈ (width/spacing) * (height/spacing)
-  // 10000 ≈ (1.0/spacing) * (0.5/spacing) = 0.5/spacing²
-  // spacing² ≈ 0.5/10000 = 0.00005
-  // spacing ≈ 0.007
-  const double particle_spacing = 0.007;  // 粒子间距 (m)
+  // 3000 ≈ (1.0/spacing) * (0.5/spacing) = 0.5/spacing²
+  // spacing² ≈ 0.5/3000 = 0.000167
+  // spacing ≈ 0.013
+  const double particle_spacing = 0.013;  // 粒子间距 (m)
   const double particle_radius = particle_spacing / 2.0;
   const double smoothing_radius = 2.1 * particle_spacing;
   const double cell_size = 2.0 * smoothing_radius;
@@ -706,6 +786,30 @@ int main() {
     theoretical_laplacian[i] = 0;
   }
   
+  // 计算PPE系数矩阵的对角线元素
+  std::cout << "\n计算PPE系数矩阵的对角线元素..." << std::endl;
+  std::vector<double> diagonal_coefficients(fluid_particles.particle_num);
+  double min_diag = std::numeric_limits<double>::max();
+  double max_diag = std::numeric_limits<double>::lowest();
+  double sum_diag = 0.0;
+  for (int i = 0; i < fluid_particles.particle_num; ++i) {
+    diagonal_coefficients[i] = ComputeDiagonalCoefficient(
+        i, fluid_particles, solid_particles,
+        matrices[i], smoothing_radius, rho);
+    if (diagonal_coefficients[i] < min_diag) {
+      min_diag = diagonal_coefficients[i];
+    }
+    if (diagonal_coefficients[i] > max_diag) {
+      max_diag = diagonal_coefficients[i];
+    }
+    sum_diag += diagonal_coefficients[i];
+  }
+  double avg_diag = sum_diag / fluid_particles.particle_num;
+  std::cout << "  对角线元素范围: [" << std::scientific << std::setprecision(6) 
+            << min_diag << ", " << max_diag << "]" << std::fixed << std::endl;
+  std::cout << "  对角线元素平均值: " << std::scientific << std::setprecision(6) 
+            << avg_diag << std::fixed << std::endl;
+  
   // 统计误差
   std::cout << "\n梯度误差统计:" << std::endl;
   double total_error_x = 0.0;
@@ -807,7 +911,8 @@ int main() {
       theoretical_pressure,
       computed_gradient,
       theoretical_gradient,
-      computed_laplacian);
+      computed_laplacian,
+      diagonal_coefficients);
   
   // 输出壁面粒子到VTK文件
   WriteWallParticlesToVTK(
