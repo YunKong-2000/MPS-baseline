@@ -8,6 +8,13 @@
 #include <vector>
 #include <algorithm>
 
+// PETSc前向声明（避免在头文件中包含PETSc头文件）
+// 注意：这些类型在PETSc中是typedef，这里使用前向声明
+struct _p_Mat;
+struct _p_Vec;
+typedef struct _p_Mat* Mat;
+typedef struct _p_Vec* Vec;
+
 namespace mps2D {
 
 // PPE（压力泊松方程）系数矩阵构建器
@@ -83,6 +90,32 @@ public:
       Eigen::SparseMatrix<double, Eigen::ColMajor>& A,
       Eigen::VectorXd& b,
       DebugInfo& debug_info);
+
+  // 直接构建PETSc格式的PPE系数矩阵A和右边项b
+  // 参数：
+  //   fluid_particles: 流体粒子对象
+  //   solid_particles: 固体粒子对象
+  //   corrective_matrices: 每个粒子的corrective matrix（5x5）
+  //   smoothing_radius: 平滑半径（r_e）
+  //   density: 流体密度（ρ）
+  //   time_step: 时间步长（Δt）
+  //   gravity_x: 重力加速度x分量（用于壁面压力边界条件）
+  //   gravity_y: 重力加速度y分量（用于壁面压力边界条件）
+  //   A_petsc: 输出的PETSc系数矩阵（必须在调用前初始化为NULL或已创建的Mat对象）
+  //   b_petsc: 输出的PETSc右边项向量（必须在调用前初始化为NULL或已创建的Vec对象）
+  // 返回：是否成功构建
+  // 注意：调用者负责销毁返回的Mat和Vec对象（使用MatDestroy和VecDestroy）
+  bool BuildPPEMatrixPetsc(
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+      double smoothing_radius,
+      double density,
+      double time_step,
+      double gravity_x,
+      double gravity_y,
+      Mat& A_petsc,
+      Vec& b_petsc);
 
 private:
   // 为单个粒子构建系数矩阵行和右边项

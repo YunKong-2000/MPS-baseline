@@ -5,9 +5,14 @@
 #include "core/Types.h"
 #include "core/MPSUtils.h"
 #include <iostream>
-#include <iomanip>
 #include <cmath>
 #include <vector>
+#include <Eigen/Dense>
+
+// PETSc头文件
+#include <petsc.h>
+#include <petscvec.h>
+#include <petscmat.h>
 
 using namespace mps2D;
 
@@ -219,28 +224,38 @@ int main() {
   }
   std::cout << "  完成" << std::endl;
   
-  // 构建PPE系数矩阵和右边项（带调试信息）
-  std::cout << "\n构建PPE系数矩阵和右边项..." << std::endl;
+  // 直接构建PETSc格式的PPE系数矩阵和右边项
+  std::cout << "\n构建PPE系数矩阵和右边项（PETSc格式）..." << std::endl;
   PPEMatrixBuilder matrix_builder;
-  Eigen::SparseMatrix<double, Eigen::ColMajor> A;
-  Eigen::VectorXd b;
-  PPEMatrixBuilder::DebugInfo debug_info;
+  Mat A_petsc = NULL;
+  Vec b_petsc = NULL;
   
-  bool success = matrix_builder.BuildPPEMatrixWithDebug(
+  bool success = matrix_builder.BuildPPEMatrixPetsc(
       fluid_particles, solid_particles, corrective_matrices,
-      smoothing_radius, rho, time_step, gravity_x, gravity_y, A, b, debug_info);
+      smoothing_radius, rho, time_step, gravity_x, gravity_y, A_petsc, b_petsc);
   
   if (!success) {
     std::cerr << "错误：构建PPE矩阵失败" << std::endl;
     return 1;
   }
   
-  std::cout << "  矩阵大小: " << A.rows() << " x " << A.cols() << std::endl;
-  std::cout << "  非零元素数: " << A.nonZeros() << std::endl;
-  std::cout << "  稀疏度: " << (1.0 - static_cast<double>(A.nonZeros()) / (A.rows() * A.cols())) * 100.0 
+  // 获取矩阵信息
+  PetscInt m, n;
+  MatGetSize(A_petsc, &m, &n);
+  MatInfo info;
+  MatGetInfo(A_petsc, MAT_GLOBAL_SUM, &info);
+  PetscInt nnz = static_cast<PetscInt>(info.nz_used);
+  
+  std::cout << "  矩阵大小: " << m << " x " << n << std::endl;
+  std::cout << "  非零元素数: " << nnz << std::endl;
+  std::cout << "  稀疏度: " << (1.0 - static_cast<double>(nnz) / (m * n)) * 100.0 
             << "%" << std::endl;
   
-  std::cout << "\nPPE系数矩阵构建完成！" << std::endl;
+  std::cout << "\nPPE矩阵构建完成！" << std::endl;
+  
+  // 清理PETSc对象
+  MatDestroy(&A_petsc);
+  VecDestroy(&b_petsc);
   
   return 0;
 }

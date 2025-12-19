@@ -3,7 +3,38 @@
 #include <cmath>
 #include <iostream>
 
+// PETSc头文件（用于直接构建PETSc矩阵）
+#include <petsc.h>
+#include <petscmat.h>
+#include <petscvec.h>
+
 namespace mps2D {
+
+// 静态标志，确保PETSc只初始化一次
+static bool petsc_initialized_in_builder = false;
+
+// 确保PETSc已初始化（用于BuildPPEMatrixPetsc）
+static void EnsurePetscInitialized() {
+  if (!petsc_initialized_in_builder) {
+    // 检查PETSc是否已经初始化
+    PetscBool initialized = PETSC_FALSE;
+    PetscInitialized(&initialized);
+    
+    if (!initialized) {
+      int argc = 0;
+      char** argv = nullptr;
+      PetscErrorCode ierr = PetscInitialize(&argc, &argv, nullptr, nullptr);
+      if (ierr) {
+        std::cerr << "错误：PETSc初始化失败" << std::endl;
+        return;
+      }
+      
+      // 设置PETSc选项：不显示版权信息
+      PetscOptionsSetValue(nullptr, "-options_left", "false");
+    }
+    petsc_initialized_in_builder = true;
+  }
+}
 
 bool PPEMatrixBuilder::BuildPPEMatrix(
     const FluidParticle& fluid_particles,
@@ -404,6 +435,191 @@ void PPEMatrixBuilder::BuildParticleRowWithDebug(
   
   // 设置右边项
   b(particle_idx) = (1.0 / time_step) * divergence + coeff_factor * wall_pressure_term;
+}
+
+bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+    double smoothing_radius,
+    double density,
+    double time_step,
+    double gravity_x,
+    double gravity_y,
+    Mat& A_petsc,
+    Vec& b_petsc) {
+  
+  // 确保PETSc已初始化
+  EnsurePetscInitialized();
+  
+  int num_fluid_particles = fluid_particles.particle_num;
+  
+  if (num_fluid_particles == 0) {
+    std::cerr << "错误：流体粒子数为0" << std::endl;
+    return false;
+  }
+  
+  if (static_cast<int>(corrective_matrices.size()) != num_fluid_particles) {
+    std::cerr << "错误：corrective matrix数量与流体粒子数不匹配" << std::endl;
+    return false;
+  }
+  
+  PetscInt m = static_cast<PetscInt>(num_fluid_particles);
+  PetscInt n = static_cast<PetscInt>(num_fluid_particles);
+  
+  // 统计每行的非零元素数
+  std::vector<PetscInt> nnz_per_row(num_fluid_particles);
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    // 每个粒子至少有一个对角线元素
+    nnz_per_row[i] = 1;
+    // 加上所有邻域粒子对应的非对角线元素
+    nnz_per_row[i] += static_cast<PetscInt>(fluid_particles.fluid_neighbour_list[i].size());
+  }
+  
+  // 创建PETSc矩阵
+  if (A_petsc == NULL) {
+    MatCreate(PETSC_COMM_WORLD, &A_petsc);
+    MatSetSizes(A_petsc, PETSC_DECIDE, PETSC_DECIDE, m, n);
+    MatSetType(A_petsc, MATSEQAIJ);
+    MatSeqAIJSetPreallocation(A_petsc, 0, nnz_per_row.data());
+    MatSetUp(A_petsc);
+  } else {
+    // 如果矩阵已存在，先清空
+    MatZeroEntries(A_petsc);
+  }
+  
+  // 创建PETSc向量
+  if (b_petsc == NULL) {
+    VecCreate(PETSC_COMM_WORLD, &b_petsc);
+    VecSetSizes(b_petsc, PETSC_DECIDE, m);
+    VecSetType(b_petsc, VECSEQ);
+    VecSetFromOptions(b_petsc);
+    VecSet(b_petsc, 0.0);
+  } else {
+    VecSet(b_petsc, 0.0);
+  }
+  
+  // 创建CorrectiveMatrix实例用于计算基函数
+  CorrectiveMatrix corrective_matrix_calc;
+  
+  // 系数矩阵的系数因子
+  double coeff_factor = 2.0 / (smoothing_radius * density);
+  
+  // 遍历所有流体粒子，构建系数矩阵和右边项
+  for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
+    const double2& pos_i = fluid_particles.position[particle_idx];
+    const double2& vel_i = fluid_particles.velocity[particle_idx];
+    
+    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& 
+        corrective_matrix = corrective_matrices[particle_idx];
+    
+    // 提取corrective matrix的行向量
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1 = corrective_matrix.row(0);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2 = corrective_matrix.row(1);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3 = corrective_matrix.row(2);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4 = corrective_matrix.row(3);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4 = C3 + C4;
+    
+    // 初始化累加变量
+    double diag_sum = 0.0;
+    double divergence = 0.0;
+    double wall_pressure_term = 0.0;
+    
+    PetscInt row = static_cast<PetscInt>(particle_idx);
+    
+    // 遍历流体邻域粒子
+    for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+      const double2& pos_j = fluid_particles.position[j];
+      const double2& vel_j = fluid_particles.velocity[j];
+      
+      double dx = pos_j.x - pos_i.x;
+      double dy = pos_j.y - pos_i.y;
+      double dist = ComputeDistance(pos_i, pos_j);
+      
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+      
+      double weight = WeightFunction(dist, smoothing_radius);
+      
+      // 计算基函数
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
+          corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+      
+      // 计算公共项
+      double common_coeff = (weight / dist) * (C3_plus_C4 * basis)(0, 0);
+      
+      // 累加对角线系数（负号）
+      diag_sum += common_coeff;
+      
+      // 添加非对角线系数（正号）
+      PetscInt col = static_cast<PetscInt>(j);
+      double off_diag_coeff = coeff_factor * common_coeff;
+      MatSetValue(A_petsc, row, col, off_diag_coeff, ADD_VALUES);
+      
+      // 计算速度散度项
+      double dux_dr = (vel_j.x - vel_i.x) / dist;
+      double duy_dr = (vel_j.y - vel_i.y) / dist;
+      double C1P = (C1 * basis)(0, 0);
+      double C2P = (C2 * basis)(0, 0);
+      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+    }
+    
+    // 处理壁面邻域粒子
+    for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+      const double2& pos_j = solid_particles.position[j];
+      const double2& vel_wall = solid_particles.velocity[j];
+      const double2& normal = solid_particles.normal_vector[j];
+      
+      double dx = pos_j.x - pos_i.x;
+      double dy = pos_j.y - pos_i.y;
+      double dist = ComputeDistance(pos_i, pos_j);
+      
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+      
+      double weight = WeightFunction(dist, smoothing_radius);
+      
+      // 对于速度散度：使用第一类边界条件的基函数
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis_velocity = 
+          corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+      
+      // 对于壁面压力边界条件项：使用第二类边界条件的基函数
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis_pressure = 
+          corrective_matrix_calc.ComputeBasisFunctionsForWall(
+              dx, dy, normal.x, normal.y, smoothing_radius);
+      
+      // 计算速度散度项
+      double dux_dr = (vel_wall.x - vel_i.x) / dist;
+      double duy_dr = (vel_wall.y - vel_i.y) / dist;
+      double C1P = (C1 * basis_velocity)(0, 0);
+      double C2P = (C2 * basis_velocity)(0, 0);
+      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+      
+      // 计算壁面压力边界条件项
+      double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;
+      double wall_pressure_coeff = -weight * (density * n_dot_g) * (C3_plus_C4 * basis_pressure)(0, 0);
+      wall_pressure_term += wall_pressure_coeff;
+    }
+    
+    // 设置对角线系数
+    double diag_coeff = -coeff_factor * diag_sum;
+    MatSetValue(A_petsc, row, row, diag_coeff, ADD_VALUES);
+    
+    // 设置右边项
+    double b_value = (1.0 / time_step) * divergence + coeff_factor * wall_pressure_term;
+    VecSetValue(b_petsc, row, b_value, INSERT_VALUES);
+  }
+  
+  // 组装矩阵和向量
+  MatAssemblyBegin(A_petsc, MAT_FINAL_ASSEMBLY);
+  MatAssemblyEnd(A_petsc, MAT_FINAL_ASSEMBLY);
+  
+  VecAssemblyBegin(b_petsc);
+  VecAssemblyEnd(b_petsc);
+  
+  return true;
 }
 
 } // namespace mps2D
