@@ -46,6 +46,8 @@ $$
 \end{cases}
 $$
 
+其中$N_r$为邻域内的流体粒子数
+
 ## 速度散度离散
 
 ### 远离壁面内部粒子
@@ -97,7 +99,7 @@ $$
 
 $$
 \begin{align*}
-    &\left(-\frac{4}{n_0 \lambda \rho} \sum_{j \neq i} w_{ij}\right) p_i + \sum_{j \neq i} \left(\frac{4}{n_0 \lambda \rho} w_{ij}\right) p_j \\
-    &\quad = \frac{4}{n_0 \lambda \rho}\left(n_{i}^{'} - n_{i}^{*}\right) + \frac{2}{n_0 \Delta t} \sum_{j \neq i} \left[\frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \cdot \frac{\mathbf{r}_{ij}}{r_{ij}} w_{ij}\right]
+    &-\frac{4}{n_0 \lambda \rho}\left( \sum_{j \neq i} w_{ij} + \left(n_{i}^{'} - n_{i}^{*}\right)\right) p_i + \sum_{j \neq i} \left(\frac{4}{n_0 \lambda \rho} w_{ij}\right) p_j \\
+    &\quad = \frac{2}{n_0 \Delta t} \sum_{j \neq i} \left[\frac{\mathbf{u}_j - \mathbf{u}_i}{r_{ij}} \cdot \frac{\mathbf{r}_{ij}}{r_{ij}} w_{ij}\right]
 \end{align*}
 $$

@@ -78,7 +78,8 @@ bool PPESolver::Solve(
   
   // 对于中等规模矩阵（<10000），使用直接求解器（LU分解）可以达到机器精度
   // 直接求解器的精度：理论上可以达到机器精度（双精度约1e-15到1e-16）
-  if (m_global < 10000) {
+  // 但如果配置了force_iterative，则强制使用迭代方法
+  if (m_global < 10000 && !config_.force_iterative) {
     // 使用直接求解器（LU分解）
     // 注意：对于直接求解器，KSP实际上只需要1次迭代
     KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代

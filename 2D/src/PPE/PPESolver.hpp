@@ -24,6 +24,7 @@ public:
     int max_iterations = 1000;           // 最大迭代次数
     double tolerance = 1e-6;              // 收敛容差
     int restart = 30;                    // GMRES重启参数（仅用于GMRES）
+    bool force_iterative = false;        // 强制使用迭代方法（即使矩阵规模较小）
   };
 
   PPESolver() = default;
