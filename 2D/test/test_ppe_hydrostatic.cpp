@@ -11,6 +11,8 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <iomanip>
+#include <map>
 #include <Eigen/Dense>
 
 // PETSc头文件
@@ -36,12 +38,21 @@ void GenerateHydrostaticTest(
     FluidParticle& fluid_particles,
     SolidParticle& solid_particles) {
   
-  // 计算粒子数量
-  int nx_fluid = static_cast<int>(container_width / particle_spacing) + 1;
-  int ny_fluid = static_cast<int>(water_height / particle_spacing) + 1;
+  // 计算粒子数量，确保关于中心对称
+  // 从中心开始，向两边均匀分布
+  double center_x = container_width / 2.0;
+  double center_y = 0.0;  // 从底部开始
+  
+  // 计算x方向的粒子数（确保对称）
+  int nx_half = static_cast<int>(std::round(center_x / particle_spacing));
+  int nx_fluid = 2 * nx_half + 1;  // 中心粒子 + 左右各nx_half个
+  
+  // 计算y方向的粒子数
+  int ny_fluid = static_cast<int>(std::round(water_height / particle_spacing)) + 1;
+  
   int num_fluid = nx_fluid * ny_fluid;
   
-  // 生成流体粒子（水）
+  // 生成流体粒子（水）- 关于中心对称
   fluid_particles.particle_num = num_fluid;
   fluid_particles.position.resize(num_fluid);
   fluid_particles.velocity.resize(num_fluid);
@@ -53,9 +64,10 @@ void GenerateHydrostaticTest(
   
   int idx = 0;
   for (int j = 0; j < ny_fluid; ++j) {
-    for (int i = 0; i < nx_fluid; ++i) {
-      double x = i * particle_spacing;
-      double y = j * particle_spacing;
+    double y = j * particle_spacing;
+    // 从中心开始，向两边对称分布
+    for (int i = -nx_half; i <= nx_half; ++i) {
+      double x = center_x + i * particle_spacing;
       fluid_particles.position[idx] = {x, y};
       fluid_particles.velocity[idx] = {0.0, 0.0};  // 静止流体
       fluid_particles.pressure[idx] = 0.0;  // 稍后通过PPE求解
@@ -65,16 +77,15 @@ void GenerateHydrostaticTest(
     }
   }
   
-  // 生成固体粒子（容器壁面）- 两层壁面粒子
-  // 底部壁面
-  int nx_bottom = static_cast<int>(container_width / particle_spacing) + 1;
-  // 左侧壁面
-  int ny_left = static_cast<int>(container_height / particle_spacing) + 1;
-  // 右侧壁面
-  int ny_right = ny_left;
+  // 生成固体粒子（容器壁面）- 单层壁面粒子，完全对称
+  // 底部壁面：与流体粒子底部保持一个粒子间距
+  int nx_bottom = nx_fluid;  // 与流体粒子x方向数量相同，确保对称
   
-  // 两层壁面：每层都有底部、左侧、右侧
-  int num_solid = 2 * (nx_bottom + ny_left + ny_right);
+  // 左侧和右侧壁面：与流体粒子高度相同
+  int ny_wall = ny_fluid;  // 与流体粒子y方向数量相同
+  
+  // 单层壁面：底部、左侧、右侧
+  int num_solid = nx_bottom + 2 * ny_wall;  // 底部 + 左右各一层
   solid_particles.particle_num = num_solid;
   solid_particles.position.resize(num_solid);
   solid_particles.velocity.resize(num_solid);
@@ -82,9 +93,10 @@ void GenerateHydrostaticTest(
   
   idx = 0;
   
-  // 底部壁面 - 第一层（法向量向上）
-  for (int i = 0; i < nx_bottom; ++i) {
-    double x = i * particle_spacing;
+  // 底部壁面（法向量向上）
+  // 与流体粒子底部保持一个粒子间距，x坐标与流体粒子对齐
+  for (int i = -nx_half; i <= nx_half; ++i) {
+    double x = center_x + i * particle_spacing;
     double y = -particle_spacing;  // 距离底部流体粒子一个粒子间距
     solid_particles.position[idx] = {x, y};
     solid_particles.velocity[idx] = {0.0, 0.0};
@@ -92,19 +104,11 @@ void GenerateHydrostaticTest(
     ++idx;
   }
   
-  // 底部壁面 - 第二层（法向量向上）
-  for (int i = 0; i < nx_bottom; ++i) {
-    double x = i * particle_spacing;
-    double y = -2.0 * particle_spacing;  // 第二层，再向外一个粒子间距
-    solid_particles.position[idx] = {x, y};
-    solid_particles.velocity[idx] = {0.0, 0.0};
-    solid_particles.normal_vector[idx] = {0.0, 1.0};  // 向上
-    ++idx;
-  }
-  
-  // 左侧壁面 - 第一层（法向量向右）
-  for (int j = 0; j < ny_left; ++j) {
-    double x = -particle_spacing;
+  // 左侧壁面（法向量向右）
+  // 与流体粒子左侧保持一个粒子间距，y坐标与流体粒子对齐
+  double left_x = center_x - (nx_half + 1) * particle_spacing;  // 左侧壁面x坐标
+  for (int j = 0; j < ny_wall; ++j) {
+    double x = left_x;
     double y = j * particle_spacing;
     solid_particles.position[idx] = {x, y};
     solid_particles.velocity[idx] = {0.0, 0.0};
@@ -112,29 +116,11 @@ void GenerateHydrostaticTest(
     ++idx;
   }
   
-  // 左侧壁面 - 第二层（法向量向右）
-  for (int j = 0; j < ny_left; ++j) {
-    double x = -2.0 * particle_spacing;  // 第二层，再向外一个粒子间距
-    double y = j * particle_spacing;
-    solid_particles.position[idx] = {x, y};
-    solid_particles.velocity[idx] = {0.0, 0.0};
-    solid_particles.normal_vector[idx] = {1.0, 0.0};  // 向右
-    ++idx;
-  }
-  
-  // 右侧壁面 - 第一层（法向量向左）
-  for (int j = 0; j < ny_right; ++j) {
-    double x = container_width;
-    double y = j * particle_spacing;
-    solid_particles.position[idx] = {x, y};
-    solid_particles.velocity[idx] = {0.0, 0.0};
-    solid_particles.normal_vector[idx] = {-1.0, 0.0};  // 向左
-    ++idx;
-  }
-  
-  // 右侧壁面 - 第二层（法向量向左）
-  for (int j = 0; j < ny_right; ++j) {
-    double x = container_width + particle_spacing;  // 第二层，再向外一个粒子间距
+  // 右侧壁面（法向量向左）
+  // 与流体粒子右侧保持一个粒子间距，y坐标与流体粒子对齐
+  double right_x = center_x + (nx_half + 1) * particle_spacing;  // 右侧壁面x坐标
+  for (int j = 0; j < ny_wall; ++j) {
+    double x = right_x;
     double y = j * particle_spacing;
     solid_particles.position[idx] = {x, y};
     solid_particles.velocity[idx] = {0.0, 0.0};
@@ -158,7 +144,7 @@ int main() {
   const double water_height = 3;      // 水位高度 (m)
   
   // 粒子参数（平滑半径保持为粒子间距的2.1倍）
-  const double particle_spacing = M_PI / 64;  // 粒子间距 (m)
+  const double particle_spacing = 0.03;  // 粒子间距 (m)
   const double particle_radius = particle_spacing / 2.0;
   const double smoothing_radius = 3.1 * particle_spacing;  // 平滑半径是粒子间距的2.1倍
   const double cell_size = 2.0 * smoothing_radius;
@@ -200,58 +186,31 @@ int main() {
       fluid_particles, solid_particles,
       particle_radius, smoothing_radius, cell_size);
   
-  // 统计邻域信息
-  int total_fluid_neighbors = 0;
-  int total_solid_neighbors = 0;
-  for (int i = 0; i < fluid_particles.particle_num; ++i) {
-    total_fluid_neighbors += fluid_particles.fluid_neighbour_list[i].size();
-    total_solid_neighbors += fluid_particles.solid_neighbour_list[i].size();
-  }
-  std::cout << "  平均流体邻域粒子数: " 
-            << static_cast<double>(total_fluid_neighbors) / fluid_particles.particle_num << std::endl;
-  std::cout << "  平均固体邻域粒子数: " 
-            << static_cast<double>(total_solid_neighbors) / fluid_particles.particle_num << std::endl;
-  
   // 检测表面粒子
   std::cout << "\n检测表面粒子..." << std::endl;
   SurfaceDetector surface_detector;
   surface_detector.DetectSurfaceParticles(
       fluid_particles, solid_particles, smoothing_radius, particle_spacing);
   
-  // 统计表面粒子数量
-  int num_inner = 0, num_near_surface = 0, num_surface = 0, num_splash = 0;
-  for (int i = 0; i < fluid_particles.particle_num; ++i) {
-    switch (fluid_particles.surface_type[i]) {
-      case SurfaceType::INNER:
-        ++num_inner;
-        break;
-      case SurfaceType::NEAR_SURFACE:
-        ++num_near_surface;
-        break;
-      case SurfaceType::SURFACE:
-        ++num_surface;
-        break;
-      case SurfaceType::SPLASH:
-        ++num_splash;
-        break;
-    }
-  }
-  std::cout << "  内部粒子数: " << num_inner << std::endl;
-  std::cout << "  近表面粒子数: " << num_near_surface << std::endl;
-  std::cout << "  表面粒子数: " << num_surface << std::endl;
-  std::cout << "  飞溅粒子数: " << num_splash << std::endl;
-  
   // 计算corrective matrix
   std::cout << "\n计算corrective matrix..." << std::endl;
   CorrectiveMatrix corrective_matrix_calc;
+  // 速度散度使用第一类边界条件（border_condition = false）
   std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>> 
-      corrective_matrices(fluid_particles.particle_num);
+      corrective_matrices_velocity(fluid_particles.particle_num);
+  // 压力拉普拉斯算子使用第二类边界条件（border_condition = true）
+  std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>> 
+      corrective_matrices_pressure(fluid_particles.particle_num);
   
   for (int i = 0; i < fluid_particles.particle_num; ++i) {
-    corrective_matrices[i] = corrective_matrix_calc.ComputeCorrectiveMatrix(
+    // 速度散度：第一类边界条件
+    corrective_matrices_velocity[i] = corrective_matrix_calc.ComputeCorrectiveMatrix(
         i, fluid_particles, solid_particles, smoothing_radius, false);
+    // 压力拉普拉斯算子：第二类边界条件
+    corrective_matrices_pressure[i] = corrective_matrix_calc.ComputeCorrectiveMatrix(
+        i, fluid_particles, solid_particles, smoothing_radius, true);
   }
-  std::cout << "  完成" << std::endl;
+  std::cout << "  完成（速度：第一类边界条件，压力：第二类边界条件）" << std::endl;
   
   // 直接构建PETSc格式的PPE系数矩阵和右边项
   std::cout << "\n构建PPE系数矩阵和右边项（PETSc格式）..." << std::endl;
@@ -260,7 +219,7 @@ int main() {
   Vec b_petsc = NULL;
   
   bool success = matrix_builder.BuildPPEMatrixPetsc(
-      fluid_particles, solid_particles, corrective_matrices,
+      fluid_particles, solid_particles, corrective_matrices_velocity, corrective_matrices_pressure,
       smoothing_radius, rho, time_step, particle_spacing, gravity_x, gravity_y, A_petsc, b_petsc);
   
   if (!success) {
@@ -280,57 +239,7 @@ int main() {
   std::cout << "  稀疏度: " << (1.0 - static_cast<double>(nnz) / (m * n)) * 100.0 
             << "%" << std::endl;
   
-  // 分析矩阵和向量
-  std::cout << "\n分析矩阵和向量..." << std::endl;
-  
-  // 提取对角线元素
   int num_fluid_particles = fluid_particles.particle_num;
-  std::vector<double> diagonal_elements(num_fluid_particles);
-  std::vector<double> surface_diagonal;
-  std::vector<double> inner_diagonal;
-  
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    PetscInt row = static_cast<PetscInt>(i);
-    PetscInt col = static_cast<PetscInt>(i);
-    PetscScalar value;
-    MatGetValues(A_petsc, 1, &row, 1, &col, &value);
-    diagonal_elements[i] = value;
-    
-    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-      surface_diagonal.push_back(value);
-    } else {
-      inner_diagonal.push_back(value);
-    }
-  }
-  
-  // 统计对角线元素
-  if (!diagonal_elements.empty()) {
-    auto minmax = std::minmax_element(diagonal_elements.begin(), diagonal_elements.end());
-    double diag_sum = 0.0;
-    for (double val : diagonal_elements) {
-      diag_sum += std::abs(val);
-    }
-    std::cout << "  对角线元素统计:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-    std::cout << "    平均值: " << diag_sum / diagonal_elements.size() << std::endl;
-  }
-  
-  if (!surface_diagonal.empty()) {
-    auto minmax = std::minmax_element(surface_diagonal.begin(), surface_diagonal.end());
-    std::cout << "  表面粒子对角线元素:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-    std::cout << "    数量: " << surface_diagonal.size() << std::endl;
-  }
-  
-  if (!inner_diagonal.empty()) {
-    auto minmax = std::minmax_element(inner_diagonal.begin(), inner_diagonal.end());
-    std::cout << "  内部粒子对角线元素:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-    std::cout << "    数量: " << inner_diagonal.size() << std::endl;
-  }
   
   // 提取右边项
   std::vector<PetscInt> indices(num_fluid_particles);
@@ -340,54 +249,6 @@ int main() {
   }
   VecGetValues(b_petsc, num_fluid_particles, indices.data(), values.data());
   
-  std::vector<double> rhs_values(num_fluid_particles);
-  std::vector<double> surface_rhs;
-  std::vector<double> inner_rhs;
-  
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    rhs_values[i] = values[i];
-    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-      surface_rhs.push_back(values[i]);
-    } else {
-      inner_rhs.push_back(values[i]);
-    }
-  }
-  
-  // 统计右边项
-  if (!rhs_values.empty()) {
-    auto minmax = std::minmax_element(rhs_values.begin(), rhs_values.end());
-    double rhs_sum = 0.0;
-    for (double val : rhs_values) {
-      rhs_sum += std::abs(val);
-    }
-    std::cout << "  右边项统计:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-    std::cout << "    平均值: " << rhs_sum / rhs_values.size() << std::endl;
-  }
-  
-  if (!surface_rhs.empty()) {
-    auto minmax = std::minmax_element(surface_rhs.begin(), surface_rhs.end());
-    std::cout << "  表面粒子右边项:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-  }
-  
-  if (!inner_rhs.empty()) {
-    auto minmax = std::minmax_element(inner_rhs.begin(), inner_rhs.end());
-    std::cout << "  内部粒子右边项:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << std::endl;
-    std::cout << "    最大值: " << *minmax.second << std::endl;
-  }
-  
-  // 输出调试信息到VTK文件
-  std::cout << "\n输出调试信息到VTK文件..." << std::endl;
-  std::string debug_filename = "output/ppe_debug_hydrostatic.vtk";
-  if (matrix_builder.WriteDebugInfoToVTK(fluid_particles, A_petsc, b_petsc, debug_filename)) {
-    std::cout << "  调试信息已保存到: " << debug_filename << std::endl;
-  } else {
-    std::cerr << "  警告：无法保存调试信息到VTK文件" << std::endl;
-  }
   
   std::cout << "\nPPE矩阵构建完成！" << std::endl;
   
@@ -432,73 +293,59 @@ int main() {
     fluid_particles.pressure[i] = pressure_values[i];
   }
   
-  // 统计压力值
-  std::vector<double> surface_pressure;
-  std::vector<double> inner_pressure;
-  
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-      surface_pressure.push_back(pressure_values[i]);
-    } else {
-      inner_pressure.push_back(pressure_values[i]);
-    }
-  }
-  
-  if (!pressure_values.empty()) {
-    auto minmax = std::minmax_element(pressure_values.begin(), pressure_values.end());
-    double pressure_sum = 0.0;
-    for (double val : pressure_values) {
-      pressure_sum += std::abs(val);
-    }
-    std::cout << "  压力统计:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << " Pa" << std::endl;
-    std::cout << "    最大值: " << *minmax.second << " Pa" << std::endl;
-    std::cout << "    平均值: " << pressure_sum / pressure_values.size() << " Pa" << std::endl;
-  }
-  
-  if (!surface_pressure.empty()) {
-    auto minmax = std::minmax_element(surface_pressure.begin(), surface_pressure.end());
-    std::cout << "  表面粒子压力:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << " Pa" << std::endl;
-    std::cout << "    最大值: " << *minmax.second << " Pa" << std::endl;
-    std::cout << "    数量: " << surface_pressure.size() << std::endl;
-  }
-  
-  if (!inner_pressure.empty()) {
-    auto minmax = std::minmax_element(inner_pressure.begin(), inner_pressure.end());
-    std::cout << "  内部粒子压力:" << std::endl;
-    std::cout << "    最小值: " << *minmax.first << " Pa" << std::endl;
-    std::cout << "    最大值: " << *minmax.second << " Pa" << std::endl;
-    std::cout << "    数量: " << inner_pressure.size() << std::endl;
-  }
-  
   // 计算理论静水压力（p = rho * g * h，其中h是从自由表面的深度）
   // 自由表面在y = water_height，所以深度 h = water_height - y
-  std::cout << "\n验证静水压力分布..." << std::endl;
-  double max_pressure_error = 0.0;
-  double avg_pressure_error = 0.0;
-  int error_count = 0;
   
+  // 创建理论压力向量 X'
+  Vec x_theoretical = NULL;
+  VecCreate(PETSC_COMM_WORLD, &x_theoretical);
+  VecSetSizes(x_theoretical, PETSC_DECIDE, num_fluid_particles);
+  VecSetType(x_theoretical, VECSEQ);
+  VecSetFromOptions(x_theoretical);
+  
+  // 设置理论压力值
+  std::vector<PetscScalar> theoretical_pressure_vec(num_fluid_particles);
   for (int i = 0; i < num_fluid_particles; ++i) {
     double y = fluid_particles.position[i].y;
     double depth = water_height - y;  // 从自由表面的深度
     double theoretical_pressure = rho * g * depth;  // 理论静水压力
-    double computed_pressure = pressure_values[i];
-    double error = std::abs(computed_pressure - theoretical_pressure);
-    
-    max_pressure_error = std::max(max_pressure_error, error);
-    avg_pressure_error += error;
-    ++error_count;
+    theoretical_pressure_vec[i] = theoretical_pressure;
   }
   
-  if (error_count > 0) {
-    avg_pressure_error /= error_count;
-    std::cout << "  最大压力误差: " << max_pressure_error << " Pa" << std::endl;
-    std::cout << "  平均压力误差: " << avg_pressure_error << " Pa" << std::endl;
-    std::cout << "  相对误差: " << (avg_pressure_error / (rho * g * water_height)) * 100.0 << "%" << std::endl;
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    VecSetValue(x_theoretical, i, theoretical_pressure_vec[i], INSERT_VALUES);
+  }
+  VecAssemblyBegin(x_theoretical);
+  VecAssemblyEnd(x_theoretical);
+  
+  // 计算 b' = A * X'
+  Vec b_computed = NULL;
+  VecCreate(PETSC_COMM_WORLD, &b_computed);
+  VecSetSizes(b_computed, PETSC_DECIDE, num_fluid_particles);
+  VecSetType(b_computed, VECSEQ);
+  VecSetFromOptions(b_computed);
+  
+  MatMult(A_petsc, x_theoretical, b_computed);
+  
+  // 提取 b' 的值
+  std::vector<PetscScalar> b_computed_values(num_fluid_particles);
+  VecGetValues(b_computed, num_fluid_particles, indices.data(), b_computed_values.data());
+  
+  // 提取实际右边项 b 的值（之前已经提取过，但为了清晰重新提取）
+  std::vector<PetscScalar> b_actual_values(num_fluid_particles);
+  VecGetValues(b_petsc, num_fluid_particles, indices.data(), b_actual_values.data());
+  
+  // 计算差异
+  std::vector<double> diff_values(num_fluid_particles);
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    diff_values[i] = std::abs(b_computed_values[i] - b_actual_values[i]);
   }
   
-  // 使用LSMPS计算压力梯度
+  // 清理临时向量
+  VecDestroy(&x_theoretical);
+  VecDestroy(&b_computed);
+  
+  // 使用LSMPS计算压力梯度（第二类边界条件）
   std::cout << "\n使用LSMPS计算压力梯度..." << std::endl;
   std::vector<double2> pressure_gradient(num_fluid_particles);
   
@@ -506,9 +353,9 @@ int main() {
     const double2& pos_i = fluid_particles.position[i];
     double p_i = pressure_values[i];
     
-    // 提取corrective matrix的前两行（用于梯度计算）
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1 = corrective_matrices[i].row(0);  // x方向
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2 = corrective_matrices[i].row(1);  // y方向
+    // 提取压力corrective matrix的前两行（用于梯度计算，第二类边界条件）
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1 = corrective_matrices_pressure[i].row(0);  // x方向
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2 = corrective_matrices_pressure[i].row(1);  // y方向
     
     double grad_x = 0.0;
     double grad_y = 0.0;
@@ -529,7 +376,7 @@ int main() {
       double d_ij = (p_j - p_i) / dist;
       double weight = WeightFunction(dist, smoothing_radius);
       
-      // 计算基函数
+      // 计算基函数（标准基函数）
       Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
           corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
       
@@ -538,63 +385,54 @@ int main() {
       grad_y += weight * d_ij * (C2 * basis)(0, 0);
     }
     
-    // 对于压力梯度计算，通常只需要考虑流体邻域粒子
-    // 壁面边界条件已经通过corrective matrix的构建得到了考虑
+    // 处理壁面邻域粒子（第二类边界条件）
+    // 壁面处压力梯度的法向分量：dp/dn = -rho * g * n_y（对于静水压力）
+    for (int j : fluid_particles.solid_neighbour_list[i]) {
+      const double2& pos_j = solid_particles.position[j];
+      const double2& normal = solid_particles.normal_vector[j];
+      
+      double dx = pos_j.x - pos_i.x;
+      double dy = pos_j.y - pos_i.y;
+      double dist = ComputeDistance(pos_i, pos_j);
+      
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+      
+      double weight = WeightFunction(dist, smoothing_radius);
+      
+      // 使用壁面基函数（第二类边界条件）
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis_wall = 
+          corrective_matrix_calc.ComputeBasisFunctionsForWall(
+              dx, dy, normal.x, normal.y, smoothing_radius);
+      
+      // 壁面处压力梯度的法向分量：dp/dn = -rho * g * n_y（对于静水压力）
+      // 归一化法向量
+      double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+      double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
+      double d_ij = -rho * g * n_y;
+      
+      // 计算梯度贡献
+      grad_x += weight * d_ij * (C1 * basis_wall)(0, 0);
+      grad_y += weight * d_ij * (C2 * basis_wall)(0, 0);
+    }
     
     pressure_gradient[i] = {grad_x, grad_y};
   }
   
-  // 统计压力梯度
+  // 计算梯度大小
   std::vector<double> grad_magnitude(num_fluid_particles);
   for (int i = 0; i < num_fluid_particles; ++i) {
     grad_magnitude[i] = std::sqrt(pressure_gradient[i].x * pressure_gradient[i].x + 
                                    pressure_gradient[i].y * pressure_gradient[i].y);
   }
   
-  if (!grad_magnitude.empty()) {
-    auto minmax = std::minmax_element(grad_magnitude.begin(), grad_magnitude.end());
-    double grad_sum = 0.0;
-    for (double val : grad_magnitude) {
-      grad_sum += val;
-    }
-    std::cout << "  压力梯度统计:" << std::endl;
-    std::cout << "    最小梯度: " << *minmax.first << " Pa/m" << std::endl;
-    std::cout << "    最大梯度: " << *minmax.second << " Pa/m" << std::endl;
-    std::cout << "    平均梯度: " << grad_sum / grad_magnitude.size() << " Pa/m" << std::endl;
-  }
-  
-  // 验证理论压力梯度（对于静水压力，dp/dy = -rho*g，dp/dx = 0）
-  std::cout << "\n验证压力梯度分布..." << std::endl;
-  double max_grad_error = 0.0;
-  double avg_grad_error = 0.0;
-  int grad_error_count = 0;
-  
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    // 理论压力梯度：dp/dx = 0, dp/dy = -rho*g（负号因为y向下为正）
-    double theoretical_grad_x = 0.0;
-    double theoretical_grad_y = -rho * g;
-    
-    double error_x = std::abs(pressure_gradient[i].x - theoretical_grad_x);
-    double error_y = std::abs(pressure_gradient[i].y - theoretical_grad_y);
-    double error_magnitude = std::sqrt(error_x * error_x + error_y * error_y);
-    
-    max_grad_error = std::max(max_grad_error, error_magnitude);
-    avg_grad_error += error_magnitude;
-    ++grad_error_count;
-  }
-  
-  if (grad_error_count > 0) {
-    avg_grad_error /= grad_error_count;
-    std::cout << "  最大梯度误差: " << max_grad_error << " Pa/m" << std::endl;
-    std::cout << "  平均梯度误差: " << avg_grad_error << " Pa/m" << std::endl;
-    std::cout << "  理论梯度大小: " << (rho * g) << " Pa/m" << std::endl;
-    std::cout << "  相对误差: " << (avg_grad_error / (rho * g)) * 100.0 << "%" << std::endl;
-  }
-  
-  // 输出结果到VTK文件
-  std::cout << "\n输出压力结果到VTK文件..." << std::endl;
+  // 输出所有流体粒子信息到同一个VTK文件
+  std::cout << "\n输出所有流体粒子信息到VTK文件..." << std::endl;
   std::string result_filename = "output/ppe_result_hydrostatic.vtk";
   FileOperator file_op;
+  
+  // 输出流体粒子基础信息
   if (file_op.writeVTKBase(result_filename, fluid_particles)) {
     // 追加压力标量
     std::vector<double> pressure_vec(num_fluid_particles);
@@ -621,9 +459,124 @@ int main() {
       std::cerr << "  警告：无法追加梯度大小标量到VTK文件" << std::endl;
     }
     
-    std::cout << "  结果已保存到: " << result_filename << std::endl;
+    // 追加理论压力
+    std::vector<double> theoretical_pressure_double(num_fluid_particles);
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      theoretical_pressure_double[i] = static_cast<double>(theoretical_pressure_vec[i]);
+    }
+    if (file_op.appendVTKScalar(result_filename, "theoretical_pressure", theoretical_pressure_double)) {
+      std::cout << "  理论压力已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加理论压力到VTK文件" << std::endl;
+    }
+    
+    // 追加 b' = A * X' 的计算结果
+    std::vector<double> b_computed_double(num_fluid_particles);
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      b_computed_double[i] = static_cast<double>(b_computed_values[i]);
+    }
+    if (file_op.appendVTKScalar(result_filename, "b_computed_AX", b_computed_double)) {
+      std::cout << "  b' = A * X' 已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加 b' 到 VTK 文件" << std::endl;
+    }
+    
+    // 追加差异 |b' - b|
+    if (file_op.appendVTKScalar(result_filename, "diff_b_computed_actual", diff_values)) {
+      std::cout << "  差异 |b' - b| 已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加差异到 VTK 文件" << std::endl;
+    }
+    
+    // 追加自由面类型信息
+    std::vector<int> surface_type_values(num_fluid_particles);
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      // 将SurfaceType枚举转换为整数
+      // INNER = 0, NEAR_SURFACE = 1, SURFACE = 2, SPLASH = 3
+      surface_type_values[i] = static_cast<int>(fluid_particles.surface_type[i]);
+    }
+    if (file_op.appendVTKScalar(result_filename, "surface_type", surface_type_values)) {
+      std::cout << "  自由面类型已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加自由面类型到VTK文件" << std::endl;
+    }
+    
+    // 追加调试信息（对角线元素和右边项）
+    if (matrix_builder.WriteDebugInfoToVTK(fluid_particles, A_petsc, b_petsc, result_filename)) {
+      std::cout << "  调试信息（对角线元素、右边项等）已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加调试信息到VTK文件" << std::endl;
+    }
+    
+    std::cout << "  所有流体粒子信息已保存到: " << result_filename << std::endl;
   } else {
-    std::cerr << "  警告：无法创建结果VTK文件" << std::endl;
+    std::cerr << "  警告：无法创建流体粒子VTK文件" << std::endl;
+  }
+  
+  // 单独输出壁面粒子到新的VTK文件
+  std::string wall_filename = "output/ppe_result_hydrostatic_wall.vtk";
+  std::cout << "\n输出壁面粒子到VTK文件..." << std::endl;
+  std::ofstream wall_file(wall_filename);
+  if (!wall_file.is_open()) {
+    std::cerr << "  警告：无法创建壁面粒子VTK文件" << std::endl;
+  } else {
+    int num_solid = solid_particles.particle_num;
+    
+    wall_file << std::fixed << std::setprecision(15);
+    
+    // VTK文件头
+    wall_file << "# vtk DataFile Version 3.0\n";
+    wall_file << "MPS Particle Data 2D - Wall Particles\n";
+    wall_file << "ASCII\n";
+    wall_file << "DATASET POLYDATA\n";
+    
+    // 写入点坐标
+    wall_file << "POINTS " << num_solid << " float\n";
+    for (int i = 0; i < num_solid; ++i) {
+      const auto& pos = solid_particles.position[i];
+      wall_file << pos.x << " " << pos.y << " 0.0\n";
+    }
+    
+    // 写入顶点
+    wall_file << "VERTICES " << num_solid << " " << (num_solid * 2) << "\n";
+    for (int i = 0; i < num_solid; ++i) {
+      wall_file << "1 " << i << "\n";
+    }
+    
+    // 写入点数据
+    wall_file << "POINT_DATA " << num_solid << "\n";
+    
+    // 写入速度向量
+    wall_file << "VECTORS velocity float\n";
+    for (int i = 0; i < num_solid; ++i) {
+      const auto& vel = solid_particles.velocity[i];
+      wall_file << vel.x << " " << vel.y << " 0.0\n";
+    }
+    
+    // 写入法向量
+    wall_file << "VECTORS normal_vector float\n";
+    for (int i = 0; i < num_solid; ++i) {
+      const auto& normal = solid_particles.normal_vector[i];
+      wall_file << normal.x << " " << normal.y << " 0.0\n";
+    }
+    
+    // 写入法向量X分量
+    wall_file << "SCALARS normal_vector_x float\n";
+    wall_file << "LOOKUP_TABLE default\n";
+    for (int i = 0; i < num_solid; ++i) {
+      wall_file << solid_particles.normal_vector[i].x << "\n";
+    }
+    
+    // 写入法向量Y分量
+    wall_file << "SCALARS normal_vector_y float\n";
+    wall_file << "LOOKUP_TABLE default\n";
+    for (int i = 0; i < num_solid; ++i) {
+      wall_file << solid_particles.normal_vector[i].y << "\n";
+    }
+    
+    wall_file.close();
+    std::cout << "  壁面粒子结果已保存到: " << wall_filename << " (包含 " 
+              << num_solid << " 个壁面粒子)" << std::endl;
   }
   
   // 清理PETSc对象

@@ -30,7 +30,7 @@ public:
   //   smoothing_radius: 平滑半径（r_e）
   //   density: 流体密度（ρ）
   //   time_step: 时间步长（Δt）
-  //   particle_spacing: 粒子初始间距（l_0，用于自由面粒子计算）
+  //   particle_spacing: 粒子初始间距（l_0，已废弃，保留用于接口兼容性）
   //   gravity_x: 重力加速度x分量（用于壁面压力边界条件）
   //   gravity_y: 重力加速度y分量（用于壁面压力边界条件）
   //   A_petsc: 输出的PETSc系数矩阵（必须在调用前初始化为NULL或已创建的Mat对象）
@@ -40,7 +40,8 @@ public:
   bool BuildPPEMatrixPetsc(
       const FluidParticle& fluid_particles,
       const SolidParticle& solid_particles,
-      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_velocity,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_pressure,
       double smoothing_radius,
       double density,
       double time_step,
@@ -76,21 +77,24 @@ private:
   void BuildSurfaceParticleRow(
       int particle_idx,
       const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
       double smoothing_radius,
       double density,
       double time_step,
       double reference_density,
       double lambda,
-      double w_l0,
       Mat& A_petsc,
       Vec& b_petsc) const;
   
   // 构建内部粒子的矩阵行和右边项
+  // corrective_matrix_velocity: 用于速度散度计算（第一类边界条件）
+  // corrective_matrix_pressure: 用于压力拉普拉斯算子计算（第二类边界条件）
   void BuildInnerParticleRow(
       int particle_idx,
       const FluidParticle& fluid_particles,
       const SolidParticle& solid_particles,
-      const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix,
+      const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix_velocity,
+      const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix_pressure,
       CorrectiveMatrix& corrective_matrix_calc,
       double smoothing_radius,
       double density,

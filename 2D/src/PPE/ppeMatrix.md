@@ -33,20 +33,17 @@ $$
 
 $$
 \begin{align*}
-    \langle \Delta p \rangle_i &= \frac{4}{n_0 \lambda} \sum_{j \in \mathrm{fluid}} (p_j - p_i)w_{ij} - \frac{4}{n_0 \lambda}\left(n_{i}^{'} - n_{i}^{*}\right)p_i
+    \langle \Delta p \rangle_i &= \frac{4}{n_0 \lambda} \sum_{j \in \mathrm{fluid}} (p_j - p_i)w_{ij} - \frac{4}{n_0 \lambda}\left(n_{0} - n_{i}^{'}\right)p_i
 \end{align*}
 $$
 
 其中：
 
 $$
-\begin{cases}
-    n_{i}^{'} = \max(n_{i}^{*}, \tilde{n}_{i}) \\
-    \tilde{n}_{i} = n_0 + 0.1\sum_{j \neq i}^{N_r} (w_{ij} - w_{l_0})
-\end{cases}
+    n_{i}^{'} = \min(n_{i}^{*}, n_{0})
 $$
 
-其中$N_r$为邻域内的流体粒子数
+其中$n_{i}^{*}$为当前粒子的粒子数密度，考虑壁面粒子
 
 ## 速度散度离散
 
