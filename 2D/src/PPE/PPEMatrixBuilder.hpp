@@ -51,6 +51,25 @@ public:
       Mat& A_petsc,
       Vec& b_petsc);
 
+  // 基于罚函数方法构建KKT系统
+  // 参数：
+  //   A_petsc: 原始系数矩阵A（输入）
+  //   b_petsc: 原始右边项b（输入）
+  //   fluid_particles: 流体粒子对象（用于识别自由面粒子）
+  //   penalty_parameter: 罚函数参数μ
+  //   K_petsc: 输出的系统矩阵K = A^T A + D（必须在调用前初始化为NULL或已创建的Mat对象）
+  //   f_petsc: 输出的右边项f = A^T b（必须在调用前初始化为NULL或已创建的Vec对象）
+  // 返回：是否成功构建
+  // 注意：调用者负责销毁返回的Mat和Vec对象（使用MatDestroy和VecDestroy）
+  //       此函数不会销毁输入的A_petsc和b_petsc
+  bool BuildPenaltySystem(
+      Mat A_petsc,
+      Vec b_petsc,
+      const FluidParticle& fluid_particles,
+      double penalty_parameter,
+      Mat& K_petsc,
+      Vec& f_petsc) const;
+
   // 调试函数：将系数矩阵的对角线元素和右边项输出到VTK文件
   // 参数：
   //   fluid_particles: 流体粒子对象（用于输出粒子位置）

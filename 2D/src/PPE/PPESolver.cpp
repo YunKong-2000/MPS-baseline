@@ -56,18 +56,6 @@ bool PPESolver::Solve(
   // 设置矩阵
   KSPSetOperators(ksp, A_petsc, A_petsc);
   
-  // 根据配置选择求解器类型
-  if (config_.solver_type == SolverType::BICGSTAB) {
-    KSPSetType(ksp, KSPBCGS);
-  } else if (config_.solver_type == SolverType::GMRES) {
-    KSPSetType(ksp, KSPGMRES);
-    KSPGMRESSetRestart(ksp, config_.restart);
-  } else {
-    std::cerr << "错误：未知的求解器类型" << std::endl;
-    KSPDestroy(&ksp);
-    return false;
-  }
-  
   // 设置预处理类型
   PC pc;
   KSPGetPC(ksp, &pc);
@@ -76,29 +64,72 @@ bool PPESolver::Solve(
   PetscInt m_global, n_global;
   MatGetSize(A_petsc, &m_global, &n_global);
   
-  // 对于中等规模矩阵（<10000），使用直接求解器（LU分解）可以达到机器精度
-  // 直接求解器的精度：理论上可以达到机器精度（双精度约1e-15到1e-16）
-  // 但如果配置了force_iterative，则强制使用迭代方法
-  if (m_global < 10000 && !config_.force_iterative) {
-    // 使用直接求解器（LU分解）
-    // 注意：对于直接求解器，KSP实际上只需要1次迭代
-    KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代
-    PCSetType(pc, PCLU);  // 使用LU分解作为"预处理器"（实际上是直接求解）
+  // 如果矩阵是对称正定的，使用专门的求解器
+  if (config_.is_symmetric_positive_definite) {
+    // 对于对称正定矩阵
+    // 设置矩阵为对称正定（这有助于PETSc优化）
+    MatSetOption(A_petsc, MAT_SYMMETRIC, PETSC_TRUE);
+    MatSetOption(A_petsc, MAT_SPD, PETSC_TRUE);  // 对称正定
     
-    // 尝试使用PETSc内置的LU求解器
-    // 如果可用，使用更高效的求解器（如MUMPS, SuperLU等）
-    PCFactorSetMatSolverType(pc, MATSOLVERPETSC);
-    
-    std::cout << "    使用直接求解器（LU分解），目标精度：机器精度（~1e-15）" << std::endl;
+    if (m_global < 10000 && !config_.force_iterative) {
+      // 使用直接求解器（对于对称正定矩阵，使用LU但PETSc会优化）
+      KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代
+      PCSetType(pc, PCLU);  // 使用LU分解，PETSc会根据对称性优化
+      
+      // 尝试使用PETSc内置的求解器
+      PCFactorSetMatSolverType(pc, MATSOLVERPETSC);
+      
+      std::cout << "    使用直接求解器（LU分解，矩阵标记为对称正定），目标精度：机器精度（~1e-15）" << std::endl;
+    } else {
+      // 使用CG迭代法（共轭梯度法，专门用于对称正定矩阵）
+      KSPSetType(ksp, KSPCG);
+      
+      // 对于对称正定矩阵，使用Jacobi预处理（简单且稳定）
+      // 注意：IC预处理可能不稳定，特别是对于条件数较大的矩阵
+      PCSetType(pc, PCJACOBI);
+      
+      std::cout << "    使用CG迭代求解器（Jacobi预处理，适用于对称正定矩阵）" << std::endl;
+    }
   } else {
-    // 对于大矩阵，使用增强的ILU预处理
-    PCSetType(pc, PCILU);
-    PCFactorSetLevels(pc, 5);  // 使用5级fill-in
-    PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
-    PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
-    PCFactorSetShiftAmount(pc, 1e-10);
-    PCFactorSetMatOrderingType(pc, MATORDERINGND);
-    std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
+    // 对于非对称矩阵，使用原有逻辑
+    // 根据配置选择求解器类型
+    if (config_.solver_type == SolverType::BICGSTAB) {
+      KSPSetType(ksp, KSPBCGS);
+    } else if (config_.solver_type == SolverType::GMRES) {
+      KSPSetType(ksp, KSPGMRES);
+      KSPGMRESSetRestart(ksp, config_.restart);
+    } else if (config_.solver_type == SolverType::CG) {
+      KSPSetType(ksp, KSPCG);
+    } else {
+      std::cerr << "错误：未知的求解器类型" << std::endl;
+      KSPDestroy(&ksp);
+      return false;
+    }
+    
+    // 对于中等规模矩阵（<10000），使用直接求解器（LU分解）可以达到机器精度
+    // 直接求解器的精度：理论上可以达到机器精度（双精度约1e-15到1e-16）
+    // 但如果配置了force_iterative，则强制使用迭代方法
+    if (m_global < 10000 && !config_.force_iterative) {
+      // 使用直接求解器（LU分解）
+      // 注意：对于直接求解器，KSP实际上只需要1次迭代
+      KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代
+      PCSetType(pc, PCLU);  // 使用LU分解作为"预处理器"（实际上是直接求解）
+      
+      // 尝试使用PETSc内置的LU求解器
+      // 如果可用，使用更高效的求解器（如MUMPS, SuperLU等）
+      PCFactorSetMatSolverType(pc, MATSOLVERPETSC);
+      
+      std::cout << "    使用直接求解器（LU分解），目标精度：机器精度（~1e-15）" << std::endl;
+    } else {
+      // 对于大矩阵，使用增强的ILU预处理
+      PCSetType(pc, PCILU);
+      PCFactorSetLevels(pc, 5);  // 使用5级fill-in
+      PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
+      PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
+      PCFactorSetShiftAmount(pc, 1e-10);
+      PCFactorSetMatOrderingType(pc, MATORDERINGND);
+      std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
+    }
   }
   
   // 计算右边项的范数，用于相对残差计算

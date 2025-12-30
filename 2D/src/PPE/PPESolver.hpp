@@ -15,7 +15,8 @@ public:
   // 求解器类型
   enum class SolverType {
     BICGSTAB,  // BiCGSTAB迭代法（推荐用于非对称矩阵）
-    GMRES      // GMRES迭代法
+    GMRES,     // GMRES迭代法
+    CG         // CG迭代法（用于对称正定矩阵）
   };
 
   // 求解器配置参数
@@ -25,6 +26,7 @@ public:
     double tolerance = 1e-6;              // 收敛容差
     int restart = 30;                    // GMRES重启参数（仅用于GMRES）
     bool force_iterative = false;        // 强制使用迭代方法（即使矩阵规模较小）
+    bool is_symmetric_positive_definite = false;  // 矩阵是否为对称正定（用于选择CG或Cholesky）
   };
 
   PPESolver() = default;

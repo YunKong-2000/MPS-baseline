@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <map>
+#include <chrono>
 #include <Eigen/Dense>
 
 // PETSc头文件
@@ -64,7 +65,7 @@ void GenerateHydrostaticTest(
   
   int idx = 0;
   for (int j = 0; j < ny_fluid; ++j) {
-    double y = j * particle_spacing;
+      double y = j * particle_spacing;
     // 从中心开始，向两边对称分布
     for (int i = -nx_half; i <= nx_half; ++i) {
       double x = center_x + i * particle_spacing;
@@ -252,32 +253,225 @@ int main() {
   
   std::cout << "\nPPE矩阵构建完成！" << std::endl;
   
-  // 求解PPE方程
-  std::cout << "\n求解PPE方程..." << std::endl;
-  PPESolver::SolverConfig solver_config;
-  solver_config.solver_type = PPESolver::SolverType::BICGSTAB;
-  solver_config.max_iterations = 1000;
-  solver_config.tolerance = 1e-6;
-  solver_config.force_iterative = true;  // 强制使用迭代方法
+  // 使用罚函数方法构建KKT系统
+  std::cout << "\n使用罚函数方法构建KKT系统..." << std::endl;
+  Mat K_petsc = NULL;
+  Vec f_petsc = NULL;
+  double penalty_parameter = 1e3;  // 罚函数参数μ
   
-  PPESolver ppe_solver(solver_config);
-  Vec p_petsc = NULL;  // 压力解向量
+  bool penalty_success = matrix_builder.BuildPenaltySystem(
+      A_petsc, b_petsc, fluid_particles, penalty_parameter, K_petsc, f_petsc);
   
-  if (!ppe_solver.Solve(A_petsc, b_petsc, p_petsc)) {
-    std::cerr << "错误：PPE求解失败" << std::endl;
+  if (!penalty_success) {
+    std::cerr << "错误：构建罚函数系统失败" << std::endl;
     MatDestroy(&A_petsc);
     VecDestroy(&b_petsc);
-    if (p_petsc != NULL) {
-      VecDestroy(&p_petsc);
-    }
     return 1;
   }
   
-  // 输出求解信息
-  std::cout << "  求解完成" << std::endl;
-  std::cout << "  迭代次数: " << ppe_solver.GetLastIterations() << std::endl;
-  std::cout << "  残差: " << ppe_solver.GetLastResidual() << std::endl;
-  std::cout << "  是否收敛: " << (ppe_solver.GetLastConverged() ? "是" : "否") << std::endl;
+  // 统计自由面粒子数量
+  int num_surface_particles = 0;
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
+      num_surface_particles++;
+    }
+  }
+  
+  std::cout << "  罚函数参数 μ: " << penalty_parameter << std::endl;
+  std::cout << "  自由面粒子数: " << num_surface_particles << std::endl;
+  
+  // 获取K矩阵信息
+  PetscInt K_m, K_n;
+  MatGetSize(K_petsc, &K_m, &K_n);
+  MatInfo K_info;
+  MatGetInfo(K_petsc, MAT_GLOBAL_SUM, &K_info);
+  PetscInt K_nnz = static_cast<PetscInt>(K_info.nz_used);
+  
+  std::cout << "  K矩阵大小: " << K_m << " x " << K_n << std::endl;
+  std::cout << "  K矩阵非零元素数: " << K_nnz << std::endl;
+  std::cout << "  K矩阵稀疏度: " << (1.0 - static_cast<double>(K_nnz) / (K_m * K_n)) * 100.0 
+            << "%" << std::endl;
+  
+  // 求解PPE方程（使用罚函数系统 K·p = f）
+  // 注意：K = A^T A + D 是对称正定矩阵，应使用专门的求解器
+  std::cout << "\n========================================" << std::endl;
+  std::cout << "对比测试：CG vs GMRES 求解器性能" << std::endl;
+  std::cout << "========================================" << std::endl;
+  
+  // 测试结果结构
+  struct SolverResult {
+    std::string name;
+    int iterations;
+    double residual;
+    bool converged;
+    double time_seconds;
+  };
+  
+  std::vector<SolverResult> results;
+  
+  // 测试1：CG方法（对称正定矩阵专用）
+  {
+    std::cout << "\n【测试1】CG方法（适用于对称正定矩阵）..." << std::endl;
+    PPESolver::SolverConfig solver_config;
+    solver_config.solver_type = PPESolver::SolverType::CG;
+    solver_config.max_iterations = 5000;
+    solver_config.tolerance = 1e-6;
+    solver_config.force_iterative = true;
+    solver_config.is_symmetric_positive_definite = true;
+    
+    PPESolver ppe_solver(solver_config);
+    Vec p_petsc_cg = NULL;
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    bool success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc_cg);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    double time_seconds = duration.count() / 1e6;
+    
+    SolverResult result;
+    result.name = "CG";
+    result.iterations = ppe_solver.GetLastIterations();
+    result.residual = ppe_solver.GetLastResidual();
+    result.converged = ppe_solver.GetLastConverged();
+    result.time_seconds = time_seconds;
+    results.push_back(result);
+    
+    std::cout << "  求解完成" << std::endl;
+    std::cout << "  迭代次数: " << result.iterations << std::endl;
+    std::cout << "  残差: " << result.residual << std::endl;
+    std::cout << "  是否收敛: " << (result.converged ? "是" : "否") << std::endl;
+    std::cout << "  求解时间: " << result.time_seconds << " 秒" << std::endl;
+    
+    if (!success) {
+      std::cerr << "错误：CG求解失败" << std::endl;
+      if (p_petsc_cg != NULL) {
+        VecDestroy(&p_petsc_cg);
+      }
+    }
+  }
+  
+  // 测试2：GMRES方法（通用方法，也可用于对称正定矩阵）
+  {
+    std::cout << "\n【测试2】GMRES方法（通用方法）..." << std::endl;
+    PPESolver::SolverConfig solver_config;
+    solver_config.solver_type = PPESolver::SolverType::GMRES;
+    solver_config.max_iterations = 5000;
+    solver_config.tolerance = 1e-6;
+    solver_config.restart = 30;
+    solver_config.force_iterative = true;
+    solver_config.is_symmetric_positive_definite = false;  // GMRES不要求对称正定
+    
+    PPESolver ppe_solver(solver_config);
+    Vec p_petsc_gmres = NULL;
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    bool success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc_gmres);
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    double time_seconds = duration.count() / 1e6;
+    
+    SolverResult result;
+    result.name = "GMRES";
+    result.iterations = ppe_solver.GetLastIterations();
+    result.residual = ppe_solver.GetLastResidual();
+    result.converged = ppe_solver.GetLastConverged();
+    result.time_seconds = time_seconds;
+    results.push_back(result);
+    
+    std::cout << "  求解完成" << std::endl;
+    std::cout << "  迭代次数: " << result.iterations << std::endl;
+    std::cout << "  残差: " << result.residual << std::endl;
+    std::cout << "  是否收敛: " << (result.converged ? "是" : "否") << std::endl;
+    std::cout << "  求解时间: " << result.time_seconds << " 秒" << std::endl;
+    
+    if (!success) {
+      std::cerr << "错误：GMRES求解失败" << std::endl;
+      if (p_petsc_gmres != NULL) {
+        VecDestroy(&p_petsc_gmres);
+      }
+    }
+  }
+  
+  // 输出对比结果
+  std::cout << "\n========================================" << std::endl;
+  std::cout << "性能对比总结" << std::endl;
+  std::cout << "========================================" << std::endl;
+  std::cout << std::left << std::setw(12) << "方法" 
+            << std::setw(15) << "迭代次数" 
+            << std::setw(15) << "残差" 
+            << std::setw(12) << "收敛" 
+            << std::setw(15) << "求解时间(秒)" << std::endl;
+  std::cout << std::string(70, '-') << std::endl;
+  
+  for (const auto& result : results) {
+    std::cout << std::left << std::setw(12) << result.name
+              << std::setw(15) << result.iterations
+              << std::setw(15) << std::scientific << std::setprecision(6) << result.residual
+              << std::setw(12) << (result.converged ? "是" : "否")
+              << std::setw(15) << std::fixed << std::setprecision(4) << result.time_seconds << std::endl;
+  }
+  
+  // 选择最佳方法
+  if (results.size() == 2) {
+    const auto& cg_result = results[0];
+    const auto& gmres_result = results[1];
+    
+    std::cout << "\n结论：" << std::endl;
+    if (cg_result.converged && gmres_result.converged) {
+      if (cg_result.time_seconds < gmres_result.time_seconds) {
+        std::cout << "  CG方法更快，快 " << (gmres_result.time_seconds / cg_result.time_seconds) 
+                  << " 倍" << std::endl;
+      } else {
+        std::cout << "  GMRES方法更快，快 " << (cg_result.time_seconds / gmres_result.time_seconds) 
+                  << " 倍" << std::endl;
+      }
+      
+      if (cg_result.iterations < gmres_result.iterations) {
+        std::cout << "  CG方法迭代次数更少（" << cg_result.iterations << " vs " 
+                  << gmres_result.iterations << "）" << std::endl;
+      } else {
+        std::cout << "  GMRES方法迭代次数更少（" << gmres_result.iterations << " vs " 
+                  << cg_result.iterations << "）" << std::endl;
+      }
+    } else if (cg_result.converged) {
+      std::cout << "  CG方法收敛，GMRES方法未收敛" << std::endl;
+    } else if (gmres_result.converged) {
+      std::cout << "  GMRES方法收敛，CG方法未收敛" << std::endl;
+  } else {
+      std::cout << "  两种方法都未收敛" << std::endl;
+    }
+  }
+  
+  // 使用CG的结果作为最终解（因为CG是专门为对称正定矩阵设计的）
+  Vec p_petsc = NULL;
+  if (results[0].converged) {
+    // 使用CG的结果
+    std::cout << "\n使用CG方法的解作为最终结果" << std::endl;
+    // 注意：这里需要重新求解或复制结果，为了简化，我们重新求解一次
+  PPESolver::SolverConfig solver_config;
+    solver_config.solver_type = PPESolver::SolverType::CG;
+    solver_config.max_iterations = 5000;
+  solver_config.tolerance = 1e-6;
+    solver_config.force_iterative = true;
+    solver_config.is_symmetric_positive_definite = true;
+  
+  PPESolver ppe_solver(solver_config);
+    if (!ppe_solver.Solve(K_petsc, f_petsc, p_petsc)) {
+      std::cerr << "错误：最终PPE求解失败" << std::endl;
+      MatDestroy(&A_petsc);
+      VecDestroy(&b_petsc);
+      MatDestroy(&K_petsc);
+      VecDestroy(&f_petsc);
+      return 1;
+    }
+  } else {
+    std::cerr << "错误：CG求解未收敛，无法继续" << std::endl;
+    MatDestroy(&A_petsc);
+    VecDestroy(&b_petsc);
+    MatDestroy(&K_petsc);
+    VecDestroy(&f_petsc);
+    return 1;
+  }
   
   // 提取压力值并更新到粒子
   std::cout << "\n提取压力解..." << std::endl;
@@ -579,9 +773,45 @@ int main() {
               << num_solid << " 个壁面粒子)" << std::endl;
   }
   
+  // 验证自由面粒子的压力（应该接近0）
+  if (num_surface_particles > 0) {
+    std::cout << "\n验证自由面粒子压力约束..." << std::endl;
+    double max_surface_pressure = 0.0;
+    double sum_surface_pressure = 0.0;
+    int surface_count = 0;
+    
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
+        double p = pressure_values[i];
+        double abs_p = std::abs(p);
+        if (abs_p > max_surface_pressure) {
+          max_surface_pressure = abs_p;
+        }
+        sum_surface_pressure += abs_p;
+        surface_count++;
+      }
+    }
+    
+    double avg_surface_pressure = (surface_count > 0) ? sum_surface_pressure / surface_count : 0.0;
+    std::cout << "  自由面粒子数: " << num_surface_particles << std::endl;
+    std::cout << "  自由面粒子最大压力绝对值: " << max_surface_pressure << std::endl;
+    std::cout << "  自由面粒子平均压力绝对值: " << avg_surface_pressure << std::endl;
+    std::cout << "  罚函数参数 μ: " << penalty_parameter << std::endl;
+    
+    if (max_surface_pressure < 1.0 / penalty_parameter * 10.0) {
+      std::cout << "  ✓ 自由面压力约束满足（压力接近0）" << std::endl;
+    } else {
+      std::cout << "  ⚠ 警告：自由面压力约束可能未完全满足" << std::endl;
+    }
+  } else {
+    std::cout << "\n注意：当前测试场景中没有自由面粒子（完全封闭容器）" << std::endl;
+  }
+  
   // 清理PETSc对象
   MatDestroy(&A_petsc);
   VecDestroy(&b_petsc);
+  MatDestroy(&K_petsc);
+  VecDestroy(&f_petsc);
   if (p_petsc != NULL) {
     VecDestroy(&p_petsc);
   }

@@ -86,36 +86,21 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   // 创建CorrectiveMatrix实例用于计算基函数
   CorrectiveMatrix corrective_matrix_calc;
   
-  // 计算参考粒子数密度n0和lambda（用于自由面粒子）
-  OriginalMPS mps_calculator;
-  double reference_density = mps_calculator.ComputeReferenceDensity(
-      fluid_particles, solid_particles, smoothing_radius);
-  // lambda计算公式：λ = (1/5) * r_e^2
-  double lambda = (1.0 / 5.0) * smoothing_radius * smoothing_radius;
-  
-  // 系数矩阵的系数因子（用于内部粒子）
+  // 系数矩阵的系数因子（统一用于所有粒子）
   double coeff_factor = 2.0 / (smoothing_radius * density);
   
   // 遍历所有流体粒子，构建系数矩阵和右边项
+  // 统一使用LSMPS离散方法（所有粒子，包括自由面粒子）
   for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
-    bool is_surface_particle = (fluid_particles.surface_type[particle_idx] == SurfaceType::SURFACE);
-    
-    if (is_surface_particle) {
-      // 自由面粒子：使用文档中的离散方法
-      BuildSurfaceParticleRow(
-          particle_idx, fluid_particles, solid_particles, smoothing_radius, density, time_step,
-          reference_density, lambda, A_petsc, b_petsc);
-    } else {
-      // 内部粒子：使用原有的LSMPS方法
-      // 速度散度使用第一类边界条件的corrective matrix
-      // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
-      BuildInnerParticleRow(
-          particle_idx, fluid_particles, solid_particles, 
-          corrective_matrices_velocity[particle_idx],
-          corrective_matrices_pressure[particle_idx],
-          corrective_matrix_calc, smoothing_radius, density, time_step,
-          gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc);
-    }
+    // 所有粒子都使用相同的LSMPS离散方法
+    // 速度散度使用第一类边界条件的corrective matrix
+    // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
+    BuildInnerParticleRow(
+        particle_idx, fluid_particles, solid_particles, 
+        corrective_matrices_velocity[particle_idx],
+        corrective_matrices_pressure[particle_idx],
+        corrective_matrix_calc, smoothing_radius, density, time_step,
+        gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc);
   }
   
   // 组装矩阵和向量
@@ -124,6 +109,87 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   
   VecAssemblyBegin(b_petsc);
   VecAssemblyEnd(b_petsc);
+  
+  return true;
+}
+
+bool PPEMatrixBuilder::BuildPenaltySystem(
+    Mat A_petsc,
+    Vec b_petsc,
+    const FluidParticle& fluid_particles,
+    double penalty_parameter,
+    Mat& K_petsc,
+    Vec& f_petsc) const {
+  
+  if (A_petsc == NULL || b_petsc == NULL) {
+    std::cerr << "错误：输入矩阵或向量为NULL" << std::endl;
+    return false;
+  }
+  
+  int num_fluid_particles = fluid_particles.particle_num;
+  if (num_fluid_particles == 0) {
+    std::cerr << "错误：流体粒子数为0" << std::endl;
+    return false;
+  }
+  
+  // 确保PETSc已初始化
+  EnsurePetscInitialized();
+  
+  // 步骤1：计算 A^T
+  Mat A_transpose = NULL;
+  MatTranspose(A_petsc, MAT_INITIAL_MATRIX, &A_transpose);
+  
+  // 步骤2：计算 K = A^T A
+  MatMatMult(A_transpose, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
+  
+  // 步骤3：构建对角惩罚矩阵 D 并添加到 K
+  // D_{ii} = μ (如果 i 是自由面粒子)，否则 0
+  Vec diagonal_penalty = NULL;
+  VecCreate(PETSC_COMM_WORLD, &diagonal_penalty);
+  VecSetSizes(diagonal_penalty, PETSC_DECIDE, num_fluid_particles);
+  VecSetType(diagonal_penalty, VECSEQ);
+  VecSetFromOptions(diagonal_penalty);
+  VecSet(diagonal_penalty, 0.0);
+  
+  // 设置自由面粒子的惩罚项
+  std::vector<PetscInt> surface_indices;
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
+      surface_indices.push_back(static_cast<PetscInt>(i));
+    }
+  }
+  
+  if (!surface_indices.empty()) {
+    std::vector<PetscScalar> penalty_values(surface_indices.size(), penalty_parameter);
+    VecSetValues(diagonal_penalty, surface_indices.size(), surface_indices.data(), 
+                 penalty_values.data(), INSERT_VALUES);
+    VecAssemblyBegin(diagonal_penalty);
+    VecAssemblyEnd(diagonal_penalty);
+  }
+  
+  // 将惩罚矩阵 D 添加到 K 的对角线上
+  // K = K + D（其中 D 是对角矩阵）
+  MatDiagonalSet(K_petsc, diagonal_penalty, ADD_VALUES);
+  
+  // 组装矩阵
+  MatAssemblyBegin(K_petsc, MAT_FINAL_ASSEMBLY);
+  MatAssemblyEnd(K_petsc, MAT_FINAL_ASSEMBLY);
+  
+  // 标记矩阵为对称正定（K = A^T A + D 是对称正定矩阵）
+  MatSetOption(K_petsc, MAT_SYMMETRIC, PETSC_TRUE);
+  MatSetOption(K_petsc, MAT_SPD, PETSC_TRUE);  // 对称正定
+  
+  // 步骤4：计算 f = A^T b
+  VecCreate(PETSC_COMM_WORLD, &f_petsc);
+  VecSetSizes(f_petsc, PETSC_DECIDE, num_fluid_particles);
+  VecSetType(f_petsc, VECSEQ);
+  VecSetFromOptions(f_petsc);
+  
+  MatMultTranspose(A_petsc, b_petsc, f_petsc);
+  
+  // 清理临时对象
+  MatDestroy(&A_transpose);
+  VecDestroy(&diagonal_penalty);
   
   return true;
 }
