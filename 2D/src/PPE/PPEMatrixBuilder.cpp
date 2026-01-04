@@ -95,12 +95,12 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     // 所有粒子都使用相同的LSMPS离散方法
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
-    BuildInnerParticleRow(
+      BuildInnerParticleRow(
         particle_idx, fluid_particles, solid_particles, 
         corrective_matrices_velocity[particle_idx],
         corrective_matrices_pressure[particle_idx],
-        corrective_matrix_calc, smoothing_radius, density, time_step,
-        gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc);
+          corrective_matrix_calc, smoothing_radius, density, time_step,
+          gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc);
   }
   
   // 组装矩阵和向量
@@ -229,10 +229,10 @@ bool PPEMatrixBuilder::WriteDebugInfoToVTK(
   
   if (!file_exists) {
     // 文件不存在，创建基础VTK文件（包含粒子位置和速度）
-    if (!file_op.writeVTKBase(filename, fluid_particles)) {
-      std::cerr << "错误：无法创建VTK基础文件" << std::endl;
-      return false;
-    }
+  if (!file_op.writeVTKBase(filename, fluid_particles)) {
+    std::cerr << "错误：无法创建VTK基础文件" << std::endl;
+    return false;
+  }
   }
   // 如果文件已存在，直接追加数据（假设基础结构已经存在）
   

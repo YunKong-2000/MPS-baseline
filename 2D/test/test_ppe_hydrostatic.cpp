@@ -5,6 +5,7 @@
 #include "../src/surface_detection/SurfaceDetector.hpp"
 #include "../src/core/Particle.hpp"
 #include "../src/core/FileOperator.hpp"
+#include "../src/correction/Correction.hpp"
 #include "core/Types.h"
 #include "core/MPSUtils.h"
 #include <iostream>
@@ -293,185 +294,40 @@ int main() {
             << "%" << std::endl;
   
   // 求解PPE方程（使用罚函数系统 K·p = f）
-  // 注意：K = A^T A + D 是对称正定矩阵，应使用专门的求解器
-  std::cout << "\n========================================" << std::endl;
-  std::cout << "对比测试：CG vs GMRES 求解器性能" << std::endl;
-  std::cout << "========================================" << std::endl;
-  
-  // 测试结果结构
-  struct SolverResult {
-    std::string name;
-    int iterations;
-    double residual;
-    bool converged;
-    double time_seconds;
-  };
-  
-  std::vector<SolverResult> results;
-  
-  // 测试1：CG方法（对称正定矩阵专用）
-  {
-    std::cout << "\n【测试1】CG方法（适用于对称正定矩阵）..." << std::endl;
-    PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::CG;
-    solver_config.max_iterations = 5000;
-    solver_config.tolerance = 1e-6;
-    solver_config.force_iterative = true;
-    solver_config.is_symmetric_positive_definite = true;
-    
-    PPESolver ppe_solver(solver_config);
-    Vec p_petsc_cg = NULL;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    bool success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc_cg);
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    double time_seconds = duration.count() / 1e6;
-    
-    SolverResult result;
-    result.name = "CG";
-    result.iterations = ppe_solver.GetLastIterations();
-    result.residual = ppe_solver.GetLastResidual();
-    result.converged = ppe_solver.GetLastConverged();
-    result.time_seconds = time_seconds;
-    results.push_back(result);
-    
-    std::cout << "  求解完成" << std::endl;
-    std::cout << "  迭代次数: " << result.iterations << std::endl;
-    std::cout << "  残差: " << result.residual << std::endl;
-    std::cout << "  是否收敛: " << (result.converged ? "是" : "否") << std::endl;
-    std::cout << "  求解时间: " << result.time_seconds << " 秒" << std::endl;
-    
-    if (!success) {
-      std::cerr << "错误：CG求解失败" << std::endl;
-      if (p_petsc_cg != NULL) {
-        VecDestroy(&p_petsc_cg);
-      }
-    }
-  }
-  
-  // 测试2：GMRES方法（通用方法，也可用于对称正定矩阵）
-  {
-    std::cout << "\n【测试2】GMRES方法（通用方法）..." << std::endl;
-    PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::GMRES;
-    solver_config.max_iterations = 5000;
-    solver_config.tolerance = 1e-6;
-    solver_config.restart = 30;
-    solver_config.force_iterative = true;
-    solver_config.is_symmetric_positive_definite = false;  // GMRES不要求对称正定
-    
-    PPESolver ppe_solver(solver_config);
-    Vec p_petsc_gmres = NULL;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    bool success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc_gmres);
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    double time_seconds = duration.count() / 1e6;
-    
-    SolverResult result;
-    result.name = "GMRES";
-    result.iterations = ppe_solver.GetLastIterations();
-    result.residual = ppe_solver.GetLastResidual();
-    result.converged = ppe_solver.GetLastConverged();
-    result.time_seconds = time_seconds;
-    results.push_back(result);
-    
-    std::cout << "  求解完成" << std::endl;
-    std::cout << "  迭代次数: " << result.iterations << std::endl;
-    std::cout << "  残差: " << result.residual << std::endl;
-    std::cout << "  是否收敛: " << (result.converged ? "是" : "否") << std::endl;
-    std::cout << "  求解时间: " << result.time_seconds << " 秒" << std::endl;
-    
-    if (!success) {
-      std::cerr << "错误：GMRES求解失败" << std::endl;
-      if (p_petsc_gmres != NULL) {
-        VecDestroy(&p_petsc_gmres);
-      }
-    }
-  }
-  
-  // 输出对比结果
-  std::cout << "\n========================================" << std::endl;
-  std::cout << "性能对比总结" << std::endl;
-  std::cout << "========================================" << std::endl;
-  std::cout << std::left << std::setw(12) << "方法" 
-            << std::setw(15) << "迭代次数" 
-            << std::setw(15) << "残差" 
-            << std::setw(12) << "收敛" 
-            << std::setw(15) << "求解时间(秒)" << std::endl;
-  std::cout << std::string(70, '-') << std::endl;
-  
-  for (const auto& result : results) {
-    std::cout << std::left << std::setw(12) << result.name
-              << std::setw(15) << result.iterations
-              << std::setw(15) << std::scientific << std::setprecision(6) << result.residual
-              << std::setw(12) << (result.converged ? "是" : "否")
-              << std::setw(15) << std::fixed << std::setprecision(4) << result.time_seconds << std::endl;
-  }
-  
-  // 选择最佳方法
-  if (results.size() == 2) {
-    const auto& cg_result = results[0];
-    const auto& gmres_result = results[1];
-    
-    std::cout << "\n结论：" << std::endl;
-    if (cg_result.converged && gmres_result.converged) {
-      if (cg_result.time_seconds < gmres_result.time_seconds) {
-        std::cout << "  CG方法更快，快 " << (gmres_result.time_seconds / cg_result.time_seconds) 
-                  << " 倍" << std::endl;
-      } else {
-        std::cout << "  GMRES方法更快，快 " << (cg_result.time_seconds / gmres_result.time_seconds) 
-                  << " 倍" << std::endl;
-      }
-      
-      if (cg_result.iterations < gmres_result.iterations) {
-        std::cout << "  CG方法迭代次数更少（" << cg_result.iterations << " vs " 
-                  << gmres_result.iterations << "）" << std::endl;
-      } else {
-        std::cout << "  GMRES方法迭代次数更少（" << gmres_result.iterations << " vs " 
-                  << cg_result.iterations << "）" << std::endl;
-      }
-    } else if (cg_result.converged) {
-      std::cout << "  CG方法收敛，GMRES方法未收敛" << std::endl;
-    } else if (gmres_result.converged) {
-      std::cout << "  GMRES方法收敛，CG方法未收敛" << std::endl;
-  } else {
-      std::cout << "  两种方法都未收敛" << std::endl;
-    }
-  }
-  
-  // 使用CG的结果作为最终解（因为CG是专门为对称正定矩阵设计的）
-  Vec p_petsc = NULL;
-  if (results[0].converged) {
-    // 使用CG的结果
-    std::cout << "\n使用CG方法的解作为最终结果" << std::endl;
-    // 注意：这里需要重新求解或复制结果，为了简化，我们重新求解一次
+  // 注意：K = A^T A + D 是对称正定矩阵，使用CG方法求解
+  std::cout << "\n求解PPE方程（CG方法）..." << std::endl;
   PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::CG;
-    solver_config.max_iterations = 5000;
+  solver_config.solver_type = PPESolver::SolverType::CG;
+  solver_config.max_iterations = 5000;
   solver_config.tolerance = 1e-6;
-    solver_config.force_iterative = true;
-    solver_config.is_symmetric_positive_definite = true;
+  solver_config.force_iterative = true;
+  solver_config.is_symmetric_positive_definite = true;
   
   PPESolver ppe_solver(solver_config);
-    if (!ppe_solver.Solve(K_petsc, f_petsc, p_petsc)) {
-      std::cerr << "错误：最终PPE求解失败" << std::endl;
-      MatDestroy(&A_petsc);
-      VecDestroy(&b_petsc);
-      MatDestroy(&K_petsc);
-      VecDestroy(&f_petsc);
-      return 1;
-    }
-  } else {
-    std::cerr << "错误：CG求解未收敛，无法继续" << std::endl;
+  Vec p_petsc = NULL;
+  
+  auto start_time = std::chrono::high_resolution_clock::now();
+  bool solve_success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc);
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  
+  if (!solve_success) {
+    std::cerr << "错误：PPE求解失败" << std::endl;
     MatDestroy(&A_petsc);
     VecDestroy(&b_petsc);
     MatDestroy(&K_petsc);
     VecDestroy(&f_petsc);
+    if (p_petsc != NULL) {
+      VecDestroy(&p_petsc);
+    }
     return 1;
   }
+  
+  std::cout << "  求解完成" << std::endl;
+  std::cout << "  迭代次数: " << ppe_solver.GetLastIterations() << std::endl;
+  std::cout << "  残差: " << ppe_solver.GetLastResidual() << std::endl;
+  std::cout << "  是否收敛: " << (ppe_solver.GetLastConverged() ? "是" : "否") << std::endl;
+  std::cout << "  求解时间: " << duration.count() << " 毫秒" << std::endl;
   
   // 提取压力值并更新到粒子
   std::cout << "\n提取压力解..." << std::endl;
@@ -485,6 +341,14 @@ int main() {
   // 更新粒子压力值
   for (int i = 0; i < num_fluid_particles; ++i) {
     fluid_particles.pressure[i] = pressure_values[i];
+  }
+  
+  // 保存初始速度和位置（用于correction模块验证）
+  std::vector<double2> initial_velocity(num_fluid_particles);
+  std::vector<double2> initial_position(num_fluid_particles);
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    initial_velocity[i] = fluid_particles.velocity[i];
+    initial_position[i] = fluid_particles.position[i];
   }
   
   // 计算理论静水压力（p = rho * g * h，其中h是从自由表面的深度）
@@ -539,9 +403,41 @@ int main() {
   VecDestroy(&x_theoretical);
   VecDestroy(&b_computed);
   
-  // 使用LSMPS计算压力梯度（第二类边界条件）
-  std::cout << "\n使用LSMPS计算压力梯度..." << std::endl;
-  std::vector<double2> pressure_gradient(num_fluid_particles);
+  // ========================================================================
+  // 验证Correction模块
+  // ========================================================================
+  std::cout << "\n=== 验证Correction模块 ===" << std::endl;
+  
+  // 使用Correction模块计算压力梯度、加速度并更新速度和位置
+  std::cout << "\n使用Correction模块计算压力梯度、加速度并更新速度和位置..." << std::endl;
+  Correction correction;
+  
+  // 使用correction模块批量计算并更新
+  correction.ComputeAndUpdateAllParticles(
+      fluid_particles,
+      solid_particles,
+      corrective_matrices_pressure,
+      smoothing_radius,
+      gravity_x,
+      gravity_y,
+      rho,
+      time_step
+  );
+  
+  // 使用Correction模块单独计算压力梯度（用于验证）
+  std::vector<double2> pressure_gradient_correction(num_fluid_particles);
+  std::vector<double2> acceleration_correction(num_fluid_particles);
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    pressure_gradient_correction[i] = correction.ComputePressureGradient(
+        i, fluid_particles, solid_particles, corrective_matrices_pressure[i],
+        smoothing_radius, gravity_x, gravity_y, rho);
+    acceleration_correction[i] = correction.ComputeAcceleration(
+        pressure_gradient_correction[i], rho);
+  }
+  
+  // 使用LSMPS手动计算压力梯度（用于对比验证）
+  std::cout << "\n使用LSMPS手动计算压力梯度（用于对比验证）..." << std::endl;
+  std::vector<double2> pressure_gradient_manual(num_fluid_particles);
   
   for (int i = 0; i < num_fluid_particles; ++i) {
     const double2& pos_i = fluid_particles.position[i];
@@ -611,15 +507,157 @@ int main() {
       grad_y += weight * d_ij * (C2 * basis_wall)(0, 0);
     }
     
-    pressure_gradient[i] = {grad_x, grad_y};
+    pressure_gradient_manual[i] = {grad_x, grad_y};
   }
   
   // 计算梯度大小
-  std::vector<double> grad_magnitude(num_fluid_particles);
+  std::vector<double> grad_magnitude_manual(num_fluid_particles);
+  std::vector<double> grad_magnitude_correction(num_fluid_particles);
   for (int i = 0; i < num_fluid_particles; ++i) {
-    grad_magnitude[i] = std::sqrt(pressure_gradient[i].x * pressure_gradient[i].x + 
-                                   pressure_gradient[i].y * pressure_gradient[i].y);
+    grad_magnitude_manual[i] = std::sqrt(pressure_gradient_manual[i].x * pressure_gradient_manual[i].x + 
+                                          pressure_gradient_manual[i].y * pressure_gradient_manual[i].y);
+    grad_magnitude_correction[i] = std::sqrt(pressure_gradient_correction[i].x * pressure_gradient_correction[i].x + 
+                                             pressure_gradient_correction[i].y * pressure_gradient_correction[i].y);
   }
+  
+  // 验证压力梯度计算的准确性
+  std::cout << "\n验证压力梯度计算准确性..." << std::endl;
+  double max_grad_diff = 0.0;
+  double sum_grad_diff = 0.0;
+  double max_grad_relative_error = 0.0;
+  int grad_error_count = 0;
+  
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    double diff_x = std::abs(pressure_gradient_correction[i].x - pressure_gradient_manual[i].x);
+    double diff_y = std::abs(pressure_gradient_correction[i].y - pressure_gradient_manual[i].y);
+    double diff_magnitude = std::sqrt(diff_x * diff_x + diff_y * diff_y);
+    
+    if (diff_magnitude > max_grad_diff) {
+      max_grad_diff = diff_magnitude;
+    }
+    sum_grad_diff += diff_magnitude;
+    
+    // 计算相对误差
+    if (grad_magnitude_manual[i] > 1e-10) {
+      double relative_error = diff_magnitude / grad_magnitude_manual[i];
+      if (relative_error > max_grad_relative_error) {
+        max_grad_relative_error = relative_error;
+      }
+      if (relative_error > 1e-3) {  // 相对误差超过0.1%
+        grad_error_count++;
+      }
+    }
+  }
+  
+  double avg_grad_diff = sum_grad_diff / num_fluid_particles;
+  std::cout << "  压力梯度最大绝对误差: " << max_grad_diff << std::endl;
+  std::cout << "  压力梯度平均绝对误差: " << avg_grad_diff << std::endl;
+  std::cout << "  压力梯度最大相对误差: " << max_grad_relative_error * 100.0 << "%" << std::endl;
+  std::cout << "  压力梯度相对误差超过0.1%的粒子数: " << grad_error_count << " / " << num_fluid_particles << std::endl;
+  
+  // 验证加速度计算的准确性
+  // 对于静水压力，压力梯度应该平衡重力
+  // 理论压力梯度：dp/dy = -rho * g（y坐标向上为正，压力随y增加而减小）
+  // 理论加速度：a_y = -dp/dy / rho = -(-rho * g) / rho = g（向下为正）
+  // 但重力加速度gravity_y = -g，所以压力梯度引起的加速度应该与重力方向相反
+  std::cout << "\n验证加速度计算准确性..." << std::endl;
+  double max_acc_error = 0.0;
+  double sum_acc_error = 0.0;
+  // 对于静水压力，理论加速度y分量应该是g（向下为正），即与-gravity_y相同
+  double theoretical_acc_y = -gravity_y;  // 理论加速度y分量 = -gravity_y = g
+  
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    // 对于静水压力，压力梯度应该是垂直向下的
+    // 理论压力梯度：dp/dy = -rho * g（y坐标向上为正）
+    // 理论加速度：a_y = -dp/dy / rho = -(-rho * g) / rho = g = -gravity_y
+    double acc_error_x = std::abs(acceleration_correction[i].x - 0.0);
+    double acc_error_y = std::abs(acceleration_correction[i].y - theoretical_acc_y);
+    double acc_error = std::sqrt(acc_error_x * acc_error_x + acc_error_y * acc_error_y);
+    
+    if (acc_error > max_acc_error) {
+      max_acc_error = acc_error;
+    }
+    sum_acc_error += acc_error;
+  }
+  
+  double avg_acc_error = sum_acc_error / num_fluid_particles;
+  std::cout << "  加速度最大绝对误差: " << max_acc_error << " m/s²" << std::endl;
+  std::cout << "  加速度平均绝对误差: " << avg_acc_error << " m/s²" << std::endl;
+  std::cout << "  理论加速度y分量: " << theoretical_acc_y << " m/s²" << std::endl;
+  
+  // 验证速度和位置更新
+  std::cout << "\n验证速度和位置更新..." << std::endl;
+  double max_velocity_change = 0.0;
+  double max_position_change = 0.0;
+  double sum_velocity_change = 0.0;
+  double sum_position_change = 0.0;
+  
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    double2 velocity_change = {
+        fluid_particles.velocity[i].x - initial_velocity[i].x,
+        fluid_particles.velocity[i].y - initial_velocity[i].y
+    };
+    double2 position_change = {
+        fluid_particles.position[i].x - initial_position[i].x,
+        fluid_particles.position[i].y - initial_position[i].y
+    };
+    
+    double vel_change_magnitude = std::sqrt(velocity_change.x * velocity_change.x + 
+                                            velocity_change.y * velocity_change.y);
+    double pos_change_magnitude = std::sqrt(position_change.x * position_change.x + 
+                                            position_change.y * position_change.y);
+    
+    if (vel_change_magnitude > max_velocity_change) {
+      max_velocity_change = vel_change_magnitude;
+    }
+    if (pos_change_magnitude > max_position_change) {
+      max_position_change = pos_change_magnitude;
+    }
+    
+    sum_velocity_change += vel_change_magnitude;
+    sum_position_change += pos_change_magnitude;
+  }
+  
+  double avg_velocity_change = sum_velocity_change / num_fluid_particles;
+  double avg_position_change = sum_position_change / num_fluid_particles;
+  
+  std::cout << "  速度变化最大值: " << max_velocity_change << " m/s" << std::endl;
+  std::cout << "  速度变化平均值: " << avg_velocity_change << " m/s" << std::endl;
+  std::cout << "  位置变化最大值: " << max_position_change << " m" << std::endl;
+  std::cout << "  位置变化平均值: " << avg_position_change << " m" << std::endl;
+  
+  // 验证理论值：对于静水压力，初始速度为0，加速度为g（向下为正），经过dt后：
+  // v_new = 0 + g * dt = 9.8 * 0.001 = 0.0098 m/s（向下为正，但y坐标向上为正，所以是负的）
+  // 由于y坐标向上为正，速度变化应该是负的：v_y_new = -g * dt
+  // x_new = x_old + v_new * dt = x_old - g * dt * dt
+  double theoretical_velocity_change_y = -g * time_step;  // y方向速度变化（向下为负）
+  double theoretical_velocity_change = std::abs(theoretical_velocity_change_y);  // 速度变化大小
+  double theoretical_position_change = std::abs(theoretical_velocity_change_y * time_step);  // 位置变化大小
+  
+  std::cout << "  理论速度变化: " << theoretical_velocity_change << " m/s" << std::endl;
+  std::cout << "  理论位置变化: " << theoretical_position_change << " m" << std::endl;
+  
+  // 输出验证结果摘要
+  std::cout << "\n=== Correction模块验证结果摘要 ===" << std::endl;
+  bool grad_ok = (max_grad_relative_error < 0.01);  // 相对误差小于1%
+  bool acc_ok = (max_acc_error < 0.1);  // 加速度误差小于0.1 m/s²
+  // 对于速度变化，需要考虑y坐标方向（向上为正，所以速度变化应该是负的）
+  // 但这里我们比较的是速度变化的大小
+  bool update_ok = (std::abs(avg_velocity_change - theoretical_velocity_change) < 0.001);
+  
+  std::cout << "  压力梯度计算: " << (grad_ok ? "✓ 通过" : "✗ 失败") << std::endl;
+  std::cout << "  加速度计算: " << (acc_ok ? "✓ 通过" : "✗ 失败") << std::endl;
+  std::cout << "  速度和位置更新: " << (update_ok ? "✓ 通过" : "✗ 失败") << std::endl;
+  
+  if (grad_ok && acc_ok && update_ok) {
+    std::cout << "\n✓ Correction模块验证通过！" << std::endl;
+  } else {
+    std::cout << "\n⚠ 警告：Correction模块验证未完全通过，请检查实现" << std::endl;
+  }
+  
+  // 使用手动计算的压力梯度用于后续输出（保持兼容性）
+  std::vector<double2> pressure_gradient = pressure_gradient_manual;
+  std::vector<double> grad_magnitude = grad_magnitude_manual;
   
   // 输出所有流体粒子信息到同一个VTK文件
   std::cout << "\n输出所有流体粒子信息到VTK文件..." << std::endl;
@@ -639,18 +677,67 @@ int main() {
       std::cerr << "  警告：无法追加压力标量到VTK文件" << std::endl;
     }
     
-    // 追加压力梯度向量
-    if (file_op.appendVTKVector(result_filename, "pressure_gradient", pressure_gradient)) {
-      std::cout << "  压力梯度向量已追加" << std::endl;
+    // 追加压力梯度向量（手动计算）
+    if (file_op.appendVTKVector(result_filename, "pressure_gradient_manual", pressure_gradient_manual)) {
+      std::cout << "  压力梯度向量（手动计算）已追加" << std::endl;
     } else {
       std::cerr << "  警告：无法追加压力梯度向量到VTK文件" << std::endl;
     }
     
-    // 追加梯度大小标量
-    if (file_op.appendVTKScalar(result_filename, "gradient_magnitude", grad_magnitude)) {
-      std::cout << "  梯度大小标量已追加" << std::endl;
+    // 追加压力梯度向量（Correction模块计算）
+    if (file_op.appendVTKVector(result_filename, "pressure_gradient_correction", pressure_gradient_correction)) {
+      std::cout << "  压力梯度向量（Correction模块）已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加压力梯度向量到VTK文件" << std::endl;
+    }
+    
+    // 追加加速度向量（Correction模块计算）
+    if (file_op.appendVTKVector(result_filename, "acceleration_correction", acceleration_correction)) {
+      std::cout << "  加速度向量（Correction模块）已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加加速度向量到VTK文件" << std::endl;
+    }
+    
+    // 追加梯度大小标量（手动计算）
+    if (file_op.appendVTKScalar(result_filename, "gradient_magnitude_manual", grad_magnitude_manual)) {
+      std::cout << "  梯度大小标量（手动计算）已追加" << std::endl;
     } else {
       std::cerr << "  警告：无法追加梯度大小标量到VTK文件" << std::endl;
+    }
+    
+    // 追加梯度大小标量（Correction模块计算）
+    if (file_op.appendVTKScalar(result_filename, "gradient_magnitude_correction", grad_magnitude_correction)) {
+      std::cout << "  梯度大小标量（Correction模块）已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加梯度大小标量到VTK文件" << std::endl;
+    }
+    
+    // 追加速度变化向量
+    std::vector<double2> velocity_change(num_fluid_particles);
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      velocity_change[i] = {
+          fluid_particles.velocity[i].x - initial_velocity[i].x,
+          fluid_particles.velocity[i].y - initial_velocity[i].y
+      };
+    }
+    if (file_op.appendVTKVector(result_filename, "velocity_change", velocity_change)) {
+      std::cout << "  速度变化向量已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加速度变化向量到VTK文件" << std::endl;
+    }
+    
+    // 追加位置变化向量
+    std::vector<double2> position_change(num_fluid_particles);
+    for (int i = 0; i < num_fluid_particles; ++i) {
+      position_change[i] = {
+          fluid_particles.position[i].x - initial_position[i].x,
+          fluid_particles.position[i].y - initial_position[i].y
+      };
+    }
+    if (file_op.appendVTKVector(result_filename, "position_change", position_change)) {
+      std::cout << "  位置变化向量已追加" << std::endl;
+    } else {
+      std::cerr << "  警告：无法追加位置变化向量到VTK文件" << std::endl;
     }
     
     // 追加理论压力

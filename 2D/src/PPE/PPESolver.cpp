@@ -105,30 +105,30 @@ bool PPESolver::Solve(
       KSPDestroy(&ksp);
       return false;
     }
+  
+  // 对于中等规模矩阵（<10000），使用直接求解器（LU分解）可以达到机器精度
+  // 直接求解器的精度：理论上可以达到机器精度（双精度约1e-15到1e-16）
+  // 但如果配置了force_iterative，则强制使用迭代方法
+  if (m_global < 10000 && !config_.force_iterative) {
+    // 使用直接求解器（LU分解）
+    // 注意：对于直接求解器，KSP实际上只需要1次迭代
+    KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代
+    PCSetType(pc, PCLU);  // 使用LU分解作为"预处理器"（实际上是直接求解）
     
-    // 对于中等规模矩阵（<10000），使用直接求解器（LU分解）可以达到机器精度
-    // 直接求解器的精度：理论上可以达到机器精度（双精度约1e-15到1e-16）
-    // 但如果配置了force_iterative，则强制使用迭代方法
-    if (m_global < 10000 && !config_.force_iterative) {
-      // 使用直接求解器（LU分解）
-      // 注意：对于直接求解器，KSP实际上只需要1次迭代
-      KSPSetType(ksp, KSPPREONLY);  // 只应用预处理器，不迭代
-      PCSetType(pc, PCLU);  // 使用LU分解作为"预处理器"（实际上是直接求解）
-      
-      // 尝试使用PETSc内置的LU求解器
-      // 如果可用，使用更高效的求解器（如MUMPS, SuperLU等）
-      PCFactorSetMatSolverType(pc, MATSOLVERPETSC);
-      
-      std::cout << "    使用直接求解器（LU分解），目标精度：机器精度（~1e-15）" << std::endl;
-    } else {
-      // 对于大矩阵，使用增强的ILU预处理
-      PCSetType(pc, PCILU);
-      PCFactorSetLevels(pc, 5);  // 使用5级fill-in
-      PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
-      PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
-      PCFactorSetShiftAmount(pc, 1e-10);
-      PCFactorSetMatOrderingType(pc, MATORDERINGND);
-      std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
+    // 尝试使用PETSc内置的LU求解器
+    // 如果可用，使用更高效的求解器（如MUMPS, SuperLU等）
+    PCFactorSetMatSolverType(pc, MATSOLVERPETSC);
+    
+    std::cout << "    使用直接求解器（LU分解），目标精度：机器精度（~1e-15）" << std::endl;
+  } else {
+    // 对于大矩阵，使用增强的ILU预处理
+    PCSetType(pc, PCILU);
+    PCFactorSetLevels(pc, 5);  // 使用5级fill-in
+    PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
+    PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
+    PCFactorSetShiftAmount(pc, 1e-10);
+    PCFactorSetMatOrderingType(pc, MATORDERINGND);
+    std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
     }
   }
   
