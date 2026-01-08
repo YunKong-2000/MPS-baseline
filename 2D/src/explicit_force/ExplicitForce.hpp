@@ -49,21 +49,22 @@ public:
   // 返回：重力加速度（double2）
   double2 ComputeGravityAcceleration(double gravity_x, double gravity_y);
 
-  // 更新单个粒子的速度和位置（显式时间积分）
+  // 更新单个粒子的速度（只更新速度，不更新位置）
   // 参数：
   //   particle_idx: 粒子索引
   //   fluid_particles: 流体粒子对象（会被修改）
   //   viscous_acceleration: 粘性力加速度
   //   gravity_acceleration: 重力加速度
   //   time_step: 时间步长
-  void UpdateVelocityAndPosition(
+  // 注意：此方法只更新速度作为临时速度，位置保持不变
+  void UpdateVelocity(
       int particle_idx,
       FluidParticle& fluid_particles,
       const double2& viscous_acceleration,
       const double2& gravity_acceleration,
       double time_step);
 
-  // 批量计算并更新所有粒子的速度和位置
+  // 批量计算并更新所有粒子的速度（只更新速度，不更新位置）
   // 参数：
   //   fluid_particles: 流体粒子对象（会被修改）
   //   solid_particles: 固体粒子对象
@@ -73,7 +74,8 @@ public:
   //   gravity_x: 重力加速度x分量
   //   gravity_y: 重力加速度y分量
   //   time_step: 时间步长
-  void ComputeAndUpdateAllParticles(
+  // 注意：此方法只更新速度作为临时速度，位置保持不变
+  void ComputeAndUpdateVelocity(
       FluidParticle& fluid_particles,
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
@@ -82,6 +84,30 @@ public:
       double gravity_x,
       double gravity_y,
       double time_step);
+
+  // 批量计算并更新所有粒子的速度（只更新速度，不更新位置），同时返回粘性力加速度
+  // 参数：
+  //   fluid_particles: 流体粒子对象（会被修改）
+  //   solid_particles: 固体粒子对象
+  //   corrective_matrices: 所有粒子的corrective matrix
+  //   smoothing_radius: 平滑半径
+  //   kinematic_viscosity: 动力学粘性系数
+  //   gravity_x: 重力加速度x分量
+  //   gravity_y: 重力加速度y分量
+  //   time_step: 时间步长
+  //   viscous_acceleration: 输出参数，保存每个粒子的粘性力加速度
+  // 注意：此方法只更新速度作为临时速度，位置保持不变
+  void ComputeAndUpdateVelocity(
+      FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
+      double smoothing_radius,
+      double kinematic_viscosity,
+      double gravity_x,
+      double gravity_y,
+      double time_step,
+      std::vector<double2>& viscous_acceleration);
+
 };
 
 } // namespace mps2D

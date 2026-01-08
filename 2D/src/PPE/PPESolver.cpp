@@ -38,12 +38,22 @@ bool PPESolver::Solve(
   
   if (A_petsc == NULL || b_petsc == NULL) {
     std::cerr << "错误：PETSc矩阵或向量为NULL" << std::endl;
+    // 确保p_petsc为NULL，避免调用者尝试销毁未初始化的对象
+    if (p_petsc != NULL) {
+      VecDestroy(&p_petsc);
+      p_petsc = NULL;
+    }
     return false;
   }
   
   // 创建解向量（如果尚未创建）
   if (p_petsc == NULL) {
-    VecDuplicate(b_petsc, &p_petsc);
+    PetscErrorCode ierr = VecDuplicate(b_petsc, &p_petsc);
+    if (ierr != 0) {
+      std::cerr << "错误：创建解向量失败" << std::endl;
+      p_petsc = NULL;
+      return false;
+    }
     VecSet(p_petsc, 0.0);  // 初始化为零向量
   } else {
     VecSet(p_petsc, 0.0);  // 重置为零向量
@@ -51,7 +61,15 @@ bool PPESolver::Solve(
   
   // 创建KSP求解器
   KSP ksp;
-  KSPCreate(PETSC_COMM_WORLD, &ksp);
+  PetscErrorCode ierr_ksp = KSPCreate(PETSC_COMM_WORLD, &ksp);
+  if (ierr_ksp != 0) {
+    std::cerr << "错误：创建KSP求解器失败" << std::endl;
+    if (p_petsc != NULL) {
+      VecDestroy(&p_petsc);
+      p_petsc = NULL;
+    }
+    return false;
+  }
   
   // 设置矩阵
   KSPSetOperators(ksp, A_petsc, A_petsc);

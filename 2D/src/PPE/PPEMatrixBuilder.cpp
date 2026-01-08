@@ -135,18 +135,52 @@ bool PPEMatrixBuilder::BuildPenaltySystem(
   // 确保PETSc已初始化
   EnsurePetscInitialized();
   
+  // 初始化输出对象（如果已经存在，先销毁）
+  if (K_petsc != NULL) {
+    MatDestroy(&K_petsc);
+    K_petsc = NULL;
+  }
+  if (f_petsc != NULL) {
+    VecDestroy(&f_petsc);
+    f_petsc = NULL;
+  }
+  
   // 步骤1：计算 A^T
   Mat A_transpose = NULL;
-  MatTranspose(A_petsc, MAT_INITIAL_MATRIX, &A_transpose);
+  PetscErrorCode ierr = MatTranspose(A_petsc, MAT_INITIAL_MATRIX, &A_transpose);
+  if (ierr != 0) {
+    std::cerr << "错误：计算 A^T 失败" << std::endl;
+    return false;
+  }
   
   // 步骤2：计算 K = A^T A
-  MatMatMult(A_transpose, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
+  ierr = MatMatMult(A_transpose, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
+  if (ierr != 0) {
+    std::cerr << "错误：计算 A^T A 失败" << std::endl;
+    MatDestroy(&A_transpose);
+    return false;
+  }
   
   // 步骤3：构建对角惩罚矩阵 D 并添加到 K
   // D_{ii} = μ (如果 i 是自由面粒子)，否则 0
   Vec diagonal_penalty = NULL;
-  VecCreate(PETSC_COMM_WORLD, &diagonal_penalty);
-  VecSetSizes(diagonal_penalty, PETSC_DECIDE, num_fluid_particles);
+  ierr = VecCreate(PETSC_COMM_WORLD, &diagonal_penalty);
+  if (ierr != 0) {
+    std::cerr << "错误：创建对角惩罚向量失败" << std::endl;
+    MatDestroy(&A_transpose);
+    MatDestroy(&K_petsc);
+    return false;
+  }
+  
+  ierr = VecSetSizes(diagonal_penalty, PETSC_DECIDE, num_fluid_particles);
+  if (ierr != 0) {
+    std::cerr << "错误：设置对角惩罚向量大小失败" << std::endl;
+    VecDestroy(&diagonal_penalty);
+    MatDestroy(&A_transpose);
+    MatDestroy(&K_petsc);
+    return false;
+  }
+  
   VecSetType(diagonal_penalty, VECSEQ);
   VecSetFromOptions(diagonal_penalty);
   VecSet(diagonal_penalty, 0.0);
@@ -180,8 +214,25 @@ bool PPEMatrixBuilder::BuildPenaltySystem(
   MatSetOption(K_petsc, MAT_SPD, PETSC_TRUE);  // 对称正定
   
   // 步骤4：计算 f = A^T b
-  VecCreate(PETSC_COMM_WORLD, &f_petsc);
-  VecSetSizes(f_petsc, PETSC_DECIDE, num_fluid_particles);
+  ierr = VecCreate(PETSC_COMM_WORLD, &f_petsc);
+  if (ierr != 0) {
+    std::cerr << "错误：创建右边项向量失败" << std::endl;
+    VecDestroy(&diagonal_penalty);
+    MatDestroy(&A_transpose);
+    MatDestroy(&K_petsc);
+    return false;
+  }
+  
+  ierr = VecSetSizes(f_petsc, PETSC_DECIDE, num_fluid_particles);
+  if (ierr != 0) {
+    std::cerr << "错误：设置右边项向量大小失败" << std::endl;
+    VecDestroy(&f_petsc);
+    VecDestroy(&diagonal_penalty);
+    MatDestroy(&A_transpose);
+    MatDestroy(&K_petsc);
+    return false;
+  }
+  
   VecSetType(f_petsc, VECSEQ);
   VecSetFromOptions(f_petsc);
   

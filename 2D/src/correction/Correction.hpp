@@ -83,6 +83,28 @@ public:
       double gravity_y,
       double density,
       double time_step);
+
+  // 批量计算并更新所有粒子的速度和位置，同时保存压力梯度（在更新位置之前）
+  // 参数：
+  //   fluid_particles: 流体粒子对象（会被修改）
+  //   solid_particles: 固体粒子对象
+  //   corrective_matrices: 所有粒子的corrective matrix（使用第二类边界条件计算得到）
+  //   smoothing_radius: 平滑半径
+  //   gravity_x: 重力加速度x分量
+  //   gravity_y: 重力加速度y分量
+  //   density: 流体密度
+  //   time_step: 时间步长
+  //   pressure_gradients: 输出参数，保存所有粒子的压力梯度（在位置更新之前计算的）
+  void ComputeAndUpdateAllParticles(
+      FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+      double smoothing_radius,
+      double gravity_x,
+      double gravity_y,
+      double density,
+      double time_step,
+      std::vector<double2>& pressure_gradients);
 };
 
 } // namespace mps2D

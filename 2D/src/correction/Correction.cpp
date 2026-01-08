@@ -140,9 +140,10 @@ void Correction::ComputeAndUpdateAllParticles(
     return;
   }
   
-  // 对每个粒子计算压力梯度、加速度并更新速度和位置
+  // 第一步：先计算所有粒子的压力梯度和加速度（使用原始位置）
+  std::vector<double2> accelerations(num_particles);
   for (int i = 0; i < num_particles; ++i) {
-    // 计算压力梯度
+    // 计算压力梯度（此时所有粒子的位置都还是原始值）
     double2 pressure_gradient = ComputePressureGradient(
         i,
         fluid_particles,
@@ -154,10 +155,60 @@ void Correction::ComputeAndUpdateAllParticles(
         density);
     
     // 计算加速度
-    double2 acceleration = ComputeAcceleration(pressure_gradient, density);
+    accelerations[i] = ComputeAcceleration(pressure_gradient, density);
+  }
+  
+  // 第二步：统一更新所有粒子的速度和位置
+  for (int i = 0; i < num_particles; ++i) {
+    UpdateVelocityAndPosition(i, fluid_particles, accelerations[i], time_step);
+  }
+}
+
+void Correction::ComputeAndUpdateAllParticles(
+    FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+    double smoothing_radius,
+    double gravity_x,
+    double gravity_y,
+    double density,
+    double time_step,
+    std::vector<double2>& pressure_gradients) {
+  
+  int num_particles = fluid_particles.particle_num;
+  
+  if (static_cast<int>(corrective_matrices.size()) != num_particles) {
+    std::cerr << "错误：corrective_matrices数量与流体粒子数不匹配" << std::endl;
+    return;
+  }
+  
+  // 确保输出向量大小正确
+  pressure_gradients.resize(num_particles);
+  
+  // 第一步：先计算所有粒子的压力梯度和加速度（使用原始位置）
+  std::vector<double2> accelerations(num_particles);
+  for (int i = 0; i < num_particles; ++i) {
+    // 计算压力梯度（此时所有粒子的位置都还是原始值）
+    double2 pressure_gradient = ComputePressureGradient(
+        i,
+        fluid_particles,
+        solid_particles,
+        corrective_matrices[i],
+        smoothing_radius,
+        gravity_x,
+        gravity_y,
+        density);
     
-    // 更新速度和位置
-    UpdateVelocityAndPosition(i, fluid_particles, acceleration, time_step);
+    // 保存压力梯度（在位置更新之前）
+    pressure_gradients[i] = pressure_gradient;
+    
+    // 计算加速度
+    accelerations[i] = ComputeAcceleration(pressure_gradient, density);
+  }
+  
+  // 第二步：统一更新所有粒子的速度和位置
+  for (int i = 0; i < num_particles; ++i) {
+    UpdateVelocityAndPosition(i, fluid_particles, accelerations[i], time_step);
   }
 }
 

@@ -9,6 +9,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # 包含通用配置
 include(cmake/Common.cmake)
 
+# 构建主程序
+include(cmake/MainProgram.cmake)
+
 # 构建测试程序
 include(cmake/TestProgram.cmake)
 

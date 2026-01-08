@@ -54,12 +54,16 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     double C4P = (C4 * P)(0, 0);
     
     // ∇²v_x = ∂²v_x/∂x² + ∂²v_x/∂y²
-    laplacian_x += scalar_factor * weight * d_ij_x * C3P;  // ∂²v_x/∂x²
-    laplacian_x += scalar_factor * weight * d_ij_x * C4P;  // ∂²v_x/∂y²
+    double contrib_x_C3 = scalar_factor * weight * d_ij_x * C3P;  // ∂²v_x/∂x²
+    double contrib_x_C4 = scalar_factor * weight * d_ij_x * C4P;  // ∂²v_x/∂y²
+    laplacian_x += contrib_x_C3;
+    laplacian_x += contrib_x_C4;
     
     // ∇²v_y = ∂²v_y/∂x² + ∂²v_y/∂y²
-    laplacian_y += scalar_factor * weight * d_ij_y * C3P;  // ∂²v_y/∂x²
-    laplacian_y += scalar_factor * weight * d_ij_y * C4P;  // ∂²v_y/∂y²
+    double contrib_y_C3 = scalar_factor * weight * d_ij_y * C3P;  // ∂²v_y/∂x²
+    double contrib_y_C4 = scalar_factor * weight * d_ij_y * C4P;  // ∂²v_y/∂y²
+    laplacian_y += contrib_y_C3;
+    laplacian_y += contrib_y_C4;
   }
   
   // 处理固体邻域粒子（壁面粒子）
@@ -72,7 +76,6 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     
     // 跳过距离过小或过大的粒子
     if (dist < 1e-10 || dist > smoothing_radius) continue;
-    
     // 第一类边界条件：无滑移边界，壁面速度为零
     const double2 v_wall = {0.0, 0.0};
     
@@ -94,10 +97,15 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     double C3P = (C3 * P)(0, 0);
     double C4P = (C4 * P)(0, 0);
     
-    laplacian_x += scalar_factor * weight * d_ij_x * C3P;
-    laplacian_x += scalar_factor * weight * d_ij_x * C4P;
-    laplacian_y += scalar_factor * weight * d_ij_y * C3P;
-    laplacian_y += scalar_factor * weight * d_ij_y * C4P;
+    double contrib_x_C3 = scalar_factor * weight * d_ij_x * C3P;
+    double contrib_x_C4 = scalar_factor * weight * d_ij_x * C4P;
+    double contrib_y_C3 = scalar_factor * weight * d_ij_y * C3P;
+    double contrib_y_C4 = scalar_factor * weight * d_ij_y * C4P;
+    
+    laplacian_x += contrib_x_C3;
+    laplacian_x += contrib_x_C4;
+    laplacian_y += contrib_y_C3;
+    laplacian_y += contrib_y_C4;
   }
   
   return {laplacian_x, laplacian_y};
@@ -121,7 +129,7 @@ double2 ExplicitForce::ComputeGravityAcceleration(
   return {gravity_x, gravity_y};
 }
 
-void ExplicitForce::UpdateVelocityAndPosition(
+void ExplicitForce::UpdateVelocity(
     int particle_idx,
     FluidParticle& fluid_particles,
     const double2& viscous_acceleration,
@@ -134,18 +142,14 @@ void ExplicitForce::UpdateVelocityAndPosition(
       viscous_acceleration.y + gravity_acceleration.y
   };
   
-  // 显式时间积分：v_new = v_old + a * dt
+  // 显式时间积分：只更新速度作为临时速度，不更新位置
+  // v_temp = v_old + a * dt
   double2& velocity = fluid_particles.velocity[particle_idx];
   velocity.x += total_acceleration.x * time_step;
   velocity.y += total_acceleration.y * time_step;
-  
-  // 更新位置：x_new = x_old + v_new * dt
-  double2& position = fluid_particles.position[particle_idx];
-  position.x += velocity.x * time_step;
-  position.y += velocity.y * time_step;
 }
 
-void ExplicitForce::ComputeAndUpdateAllParticles(
+void ExplicitForce::ComputeAndUpdateVelocity(
     FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
@@ -160,9 +164,10 @@ void ExplicitForce::ComputeAndUpdateAllParticles(
   // 计算重力加速度（对所有粒子相同）
   double2 gravity_acceleration = ComputeGravityAcceleration(gravity_x, gravity_y);
   
-  // 对每个粒子计算粘性力并更新速度和位置
+  // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
+  std::vector<double2> viscous_accelerations(num_particles);
   for (int i = 0; i < num_particles; ++i) {
-    // 计算速度拉普拉斯算子
+    // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
     double2 velocity_laplacian = ComputeVelocityLaplacian(
         i,
         fluid_particles.velocity,
@@ -172,15 +177,64 @@ void ExplicitForce::ComputeAndUpdateAllParticles(
         smoothing_radius);
     
     // 计算粘性力加速度
-    double2 viscous_acceleration = ComputeViscousAcceleration(
+    viscous_accelerations[i] = ComputeViscousAcceleration(
         velocity_laplacian,
         kinematic_viscosity);
-    
-    // 更新速度和位置
-    UpdateVelocityAndPosition(
+  }
+  
+  // 第二步：统一更新所有粒子的速度（不更新位置）
+  for (int i = 0; i < num_particles; ++i) {
+    UpdateVelocity(
         i,
         fluid_particles,
-        viscous_acceleration,
+        viscous_accelerations[i],
+        gravity_acceleration,
+        time_step);
+  }
+}
+
+void ExplicitForce::ComputeAndUpdateVelocity(
+    FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
+    double smoothing_radius,
+    double kinematic_viscosity,
+    double gravity_x,
+    double gravity_y,
+    double time_step,
+    std::vector<double2>& viscous_acceleration) {
+  
+  int num_particles = fluid_particles.particle_num;
+  
+  // 确保输出向量大小正确
+  viscous_acceleration.resize(num_particles);
+  
+  // 计算重力加速度（对所有粒子相同）
+  double2 gravity_acceleration = ComputeGravityAcceleration(gravity_x, gravity_y);
+  
+  // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
+  for (int i = 0; i < num_particles; ++i) {
+    // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
+    double2 velocity_laplacian = ComputeVelocityLaplacian(
+        i,
+        fluid_particles.velocity,
+        fluid_particles,
+        solid_particles,
+        corrective_matrices[i],
+        smoothing_radius);
+    
+    // 计算粘性力加速度
+    viscous_acceleration[i] = ComputeViscousAcceleration(
+        velocity_laplacian,
+        kinematic_viscosity);
+  }
+  
+  // 第二步：统一更新所有粒子的速度（不更新位置）
+  for (int i = 0; i < num_particles; ++i) {
+    UpdateVelocity(
+        i,
+        fluid_particles,
+        viscous_acceleration[i],
         gravity_acceleration,
         time_step);
   }

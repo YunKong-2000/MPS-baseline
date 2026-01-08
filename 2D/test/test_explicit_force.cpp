@@ -398,7 +398,7 @@ int main() {
   
   // 执行显式时间积分
   std::cout << "\n执行显式时间积分..." << std::endl;
-  explicit_force.ComputeAndUpdateAllParticles(
+  explicit_force.ComputeAndUpdateVelocity(
       fluid_particles,
       solid_particles,
       matrices,
