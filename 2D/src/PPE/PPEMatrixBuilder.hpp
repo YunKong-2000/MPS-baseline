@@ -106,8 +106,8 @@ private:
       Vec& b_petsc) const;
   
   // 构建内部粒子的矩阵行和右边项
-  // corrective_matrix_velocity: 用于速度散度计算（第一类边界条件）
-  // corrective_matrix_pressure: 用于压力拉普拉斯算子计算（第二类边界条件）
+  // corrective_matrix_velocity: 用于速度散度计算（第一类边界条件，考虑壁面粒子）
+  // corrective_matrix_pressure: 用于压力拉普拉斯算子计算（第二类边界条件，考虑壁面粒子）
   void BuildInnerParticleRow(
       int particle_idx,
       const FluidParticle& fluid_particles,

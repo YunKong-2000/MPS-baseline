@@ -1,5 +1,6 @@
 #include "MPSConfig2D.hpp"
 #include "core/ErrorHandling.h"
+#include <iostream>
 
 namespace mps2D {
 
@@ -88,7 +89,7 @@ bool MPSConfig2D::Validate() const {
         CHECK_POSITIVE(simulation_config_.output_interval, "输出文件间隔 (OutputInterval)");
         
         // 验证时间步范围合理性
-        if (simulation_config_.min_time_step >= simulation_config_.max_time_step) {
+        if (simulation_config_.min_time_step > simulation_config_.max_time_step) {
             throw MPSException("最小时间步必须小于最大时间步");
         }
         if (simulation_config_.time_step < simulation_config_.min_time_step || 
@@ -98,7 +99,8 @@ bool MPSConfig2D::Validate() const {
 
         return true;
     } catch (const MPSException& e) {
-        // 参数验证失败，返回false
+        // 参数验证失败，输出错误信息
+        std::cerr << "配置验证错误: " << e.what() << std::endl;
         return false;
     }
 }

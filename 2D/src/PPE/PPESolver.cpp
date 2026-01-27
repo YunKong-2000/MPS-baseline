@@ -139,14 +139,24 @@ bool PPESolver::Solve(
     
     std::cout << "    使用直接求解器（LU分解），目标精度：机器精度（~1e-15）" << std::endl;
   } else {
-    // 对于大矩阵，使用增强的ILU预处理
-    PCSetType(pc, PCILU);
-    PCFactorSetLevels(pc, 5);  // 使用5级fill-in
-    PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
-    PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
-    PCFactorSetShiftAmount(pc, 1e-10);
-    PCFactorSetMatOrderingType(pc, MATORDERINGND);
-    std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
+    // 对于大矩阵，根据求解器类型选择预处理器
+    if (config_.solver_type == SolverType::GMRES) {
+      // 对于GMRES，使用ILU(0)预处理（零填充ILU，比Jacobi更强大但比ILU(5)更稳定）
+      PCSetType(pc, PCILU);
+      PCFactorSetLevels(pc, 0);  // 使用0级fill-in（ILU(0)）
+      PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
+      PCFactorSetShiftAmount(pc, 1e-10);
+      std::cout << "    使用迭代求解器（GMRES + ILU(0)预处理）" << std::endl;
+    } else {
+      // 对于其他迭代方法（如BiCGSTAB），使用增强的ILU预处理
+      PCSetType(pc, PCILU);
+      PCFactorSetLevels(pc, 5);  // 使用5级fill-in
+      PCFactorSetDropTolerance(pc, 1e-14, PETSC_DEFAULT, PETSC_DEFAULT);
+      PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
+      PCFactorSetShiftAmount(pc, 1e-10);
+      PCFactorSetMatOrderingType(pc, MATORDERINGND);
+      std::cout << "    使用迭代求解器（ILU预处理）" << std::endl;
+    }
     }
   }
   

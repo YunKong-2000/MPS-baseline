@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -117,6 +118,12 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "成功加载配置文件: " << config_file << std::endl;
     
+    // 调试：检查配置文件中TotalTime的原始值
+    std::string total_time_str = ini.GetValue("Simulation", "TotalTime", "");
+    std::cout << "[调试] 配置文件中TotalTime的原始值: \"" << total_time_str << "\"" << std::endl;
+    double total_time_raw = ini.GetDoubleValue("Simulation", "TotalTime", -1.0);
+    std::cout << "[调试] 配置文件中TotalTime解析后的值: " << total_time_raw << std::endl;
+    
     // 创建配置对象并加载参数
     MPSConfig2D config;
     if (!config.LoadFromConfig(ini)) {
@@ -152,6 +159,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "  时间步长: " << sim_config.time_step << " s" << std::endl;
     std::cout << "  总仿真时间: " << sim_config.total_time << " s" << std::endl;
+    std::cout << "[调试] 最终使用的总仿真时间: " << sim_config.total_time << " s" << std::endl;
     std::cout << "  密度: " << sim_config.density << " kg/m³" << std::endl;
     std::cout << "  平滑半径: " << particle_config.smoothing_radius << " m" << std::endl;
     
@@ -324,24 +332,24 @@ int main(int argc, char* argv[]) {
     Correction correction;
     
     // PPE求解器配置
-    // 注意：使用罚函数方法将问题转化为对称正定系统 K·p = f，然后使用CG方法求解
-    // 与测试程序保持一致的方法
+    // 注意：使用罚函数方法求解 K·p = f，其中 K = A^T A + D，f = A^T b（对称正定系统）
     PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::CG;  // 使用CG方法
-    solver_config.max_iterations = 10000;  // 最大迭代次数（2万粒子可能需要更多迭代）
-    solver_config.tolerance = 1e-6;
+    solver_config.solver_type = PPESolver::SolverType::CG;  // 使用CG方法（因为K是对称正定的）
+    solver_config.max_iterations = 10000;  // 最大迭代次数
+    solver_config.tolerance = 1e-6;  // 容差
     solver_config.force_iterative = true;  // 强制使用迭代求解器
-    solver_config.is_symmetric_positive_definite = true;  // 使用罚函数方法后的系统是对称正定的
+    solver_config.is_symmetric_positive_definite = true;  // 罚函数系统 K·p = f 是对称正定的
+    solver_config.restart = 0;  // CG不需要restart参数
     ppe_solver.SetConfig(solver_config);
     
     // 罚函数参数
-    double penalty_parameter = 1e3;  // 罚函数参数μ（与测试程序保持一致）
+    const double penalty_parameter = 1000;  // 罚函数参数μ
     
     // ========== 模拟循环 ==========
     std::cout << "\n========== 开始模拟循环 ==========" << std::endl;
-    std::cout << "最大迭代次数: " << sim_config.max_iterations << std::endl;
     std::cout << "总仿真时间: " << sim_config.total_time << " s" << std::endl;
     std::cout << "输出间隔: " << sim_config.output_interval << " s" << std::endl;
+    std::cout << "注意: 不限制最大迭代次数，只根据总仿真时间判断结束" << std::endl;
     flush_log();
     
     int iteration = 0;
@@ -353,7 +361,8 @@ int main(int argc, char* argv[]) {
     std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>
         corrective_matrices_explicit(num_fluid);
     
-    while (!time_manager.IsSimulationFinished() && iteration < sim_config.max_iterations && !g_interrupted) {
+    // 只根据总仿真时间和中断信号来判断是否继续，不限制最大迭代次数
+    while (!time_manager.IsSimulationFinished() && !g_interrupted) {
       try {
         ++iteration;
         g_current_iteration = iteration;
@@ -366,7 +375,6 @@ int main(int argc, char* argv[]) {
         // 计算已用时间
         auto current_wall_time = std::chrono::steady_clock::now();
         auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(current_wall_time - start_time).count();
-        auto elapsed_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(current_wall_time - start_time).count();
         
         // 每10个时间步或每5秒输出一次详细进度
         bool should_output_detail = (iteration % 10 == 0 || iteration == 1);
@@ -478,6 +486,119 @@ int main(int argc, char* argv[]) {
           for (int i = 0; i < num_fluid; ++i) {
             velocity_explicit[i] = fluid_particles.velocity[i];
           }
+          
+          // // ========== 诊断代码：检查(0,0)附近粒子的corrective matrix状态 ==========
+          // // 找到距离(0,0)最近的几个粒子
+          // const double DIAGNOSTIC_RADIUS = 0.1;  // 诊断半径（可根据实际情况调整）
+          // const int MAX_DIAGNOSTIC_PARTICLES = 5;  // 最多诊断的粒子数
+          
+          // std::vector<std::pair<int, double>> near_origin_particles;  // {粒子索引, 距离}
+          // for (int i = 0; i < num_fluid; ++i) {
+          //   double dist_to_origin = std::sqrt(
+          //       fluid_particles.position[i].x * fluid_particles.position[i].x +
+          //       fluid_particles.position[i].y * fluid_particles.position[i].y);
+          //   if (dist_to_origin < DIAGNOSTIC_RADIUS) {
+          //     near_origin_particles.push_back({i, dist_to_origin});
+          //   }
+          // }
+          
+          // // 按距离排序，选择最近的几个
+          // std::sort(near_origin_particles.begin(), near_origin_particles.end(),
+          //           [](const std::pair<int, double>& a, const std::pair<int, double>& b) {
+          //             return a.second < b.second;
+          //           });
+          
+          // if (!near_origin_particles.empty()) {
+          //   std::cout << "\n  [诊断] (0,0)附近粒子的corrective matrix和粘性力状态:" << std::endl;
+          //   int num_to_diagnose = std::min(static_cast<int>(near_origin_particles.size()), MAX_DIAGNOSTIC_PARTICLES);
+            
+          //   for (int idx = 0; idx < num_to_diagnose; ++idx) {
+          //     int i = near_origin_particles[idx].first;
+          //     double dist_to_origin = near_origin_particles[idx].second;
+              
+          //     const double2& pos = fluid_particles.position[i];
+          //     const double2& vel = fluid_particles.velocity[i];
+          //     const double2& visc_accel = viscous_acceleration[i];
+              
+          //     // 检查邻域粒子数量
+          //     int num_fluid_neighbors = fluid_particles.fluid_neighbour_list[i].size();
+          //     int num_solid_neighbors = fluid_particles.solid_neighbour_list[i].size();
+          //     int total_neighbors = num_fluid_neighbors + num_solid_neighbors;
+              
+          //     // 检查corrective matrix
+          //     const auto& C_matrix = corrective_matrices_explicit[i];
+              
+          //     // 计算条件数（需要重新构建系数矩阵C）
+          //     Eigen::MatrixXd C = corrective_matrix_calc.BuildCoefficientMatrixForDiagnostics(
+          //         i, fluid_particles, solid_particles,
+          //         particle_config.smoothing_radius, false);
+              
+          //     double condition_number = 1.0;
+          //     double max_element = C_matrix.cwiseAbs().maxCoeff();
+          //     bool is_identity = true;
+              
+          //     if (C.rows() > 0 && C.cols() > 0) {
+          //       Eigen::JacobiSVD<Eigen::MatrixXd> svd(C);
+          //       if (svd.singularValues().size() > 0) {
+          //         double max_sv = svd.singularValues()(0);
+          //         double min_sv = svd.singularValues()(svd.singularValues().size() - 1);
+          //         if (min_sv > 1e-15) {
+          //           condition_number = max_sv / min_sv;
+          //         }
+          //       }
+          //     }
+              
+          //     // 检查是否为单位矩阵
+          //     const double IDENTITY_TOLERANCE = 1e-6;
+          //     for (int row = 0; row < 5 && is_identity; ++row) {
+          //       for (int col = 0; col < 5; ++col) {
+          //         double expected = (row == col) ? 1.0 : 0.0;
+          //         if (std::abs(C_matrix(row, col) - expected) > IDENTITY_TOLERANCE) {
+          //           is_identity = false;
+          //           break;
+          //         }
+          //       }
+          //     }
+              
+          //     // 计算粘性力大小
+          //     double visc_accel_magnitude = std::sqrt(
+          //         visc_accel.x * visc_accel.x + visc_accel.y * visc_accel.y);
+              
+          //     std::cout << "    粒子 " << i << " (距离原点: " << std::scientific << std::setprecision(3)
+          //               << dist_to_origin << " m):" << std::endl;
+          //     std::cout << "      位置: (" << std::fixed << std::setprecision(6)
+          //               << pos.x << ", " << pos.y << ")" << std::endl;
+          //     std::cout << "      速度: (" << std::setprecision(6)
+          //               << vel.x << ", " << vel.y << ") m/s" << std::endl;
+          //     std::cout << "      邻域: 流体=" << num_fluid_neighbors
+          //               << ", 固体=" << num_solid_neighbors
+          //               << ", 总计=" << total_neighbors << std::endl;
+          //     std::cout << "      Corrective Matrix:" << std::endl;
+          //     std::cout << "        是否为单位矩阵: " << (is_identity ? "是" : "否") << std::endl;
+          //     std::cout << "        最大元素: " << std::scientific << std::setprecision(3)
+          //               << max_element << std::endl;
+          //     std::cout << "        条件数: " << std::scientific << std::setprecision(3)
+          //               << condition_number << std::endl;
+          //     std::cout << "      粘性力加速度: (" << std::setprecision(6)
+          //               << visc_accel.x << ", " << visc_accel.y << ") m/s²" << std::endl;
+          //     std::cout << "      粘性力大小: " << std::scientific << std::setprecision(3)
+          //               << visc_accel_magnitude << " m/s²" << std::endl;
+              
+          //     // 如果粘性力异常大，输出警告
+          //     if (visc_accel_magnitude > 1e3) {
+          //       std::cout << "      ⚠️  警告: 粘性力异常大！" << std::endl;
+          //     }
+          //     if (condition_number > 1e10) {
+          //       std::cout << "      ⚠️  警告: 条件数异常大！" << std::endl;
+          //     }
+          //     if (max_element > 1e5) {
+          //       std::cout << "      ⚠️  警告: 矩阵元素异常大！" << std::endl;
+          //     }
+          //   }
+          //   flush_log();
+          // }
+          // // ========== 诊断代码结束 ==========
+          
           if (should_output_detail) {
             auto step_end = std::chrono::steady_clock::now();
             auto step_duration = std::chrono::duration_cast<std::chrono::milliseconds>(step_end - step_start).count();
@@ -492,7 +613,7 @@ int main(int argc, char* argv[]) {
       
         // 步骤5：计算corrective matrix（用于PPE）
         // 注意：显式更新只更新速度，不更新位置，因此用于速度散度的corrective matrix
-        // 与显式力计算时使用的相同，可以直接复用corrective_matrices_explicit
+        // 与显式力计算时使用的相同（考虑壁面粒子，第一类边界条件），可以直接复用corrective_matrices_explicit
         // 只需要计算用于压力梯度的corrective matrix（第二类边界条件）
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
@@ -520,7 +641,7 @@ int main(int argc, char* argv[]) {
           throw;
         }
         
-        // 复用显式力计算时的corrective matrix作为速度散度用（第一类边界条件）
+        // 复用显式力计算时的corrective matrix作为速度散度用（第一类边界条件，考虑壁面粒子）
         // 因为显式更新不改变粒子位置，所以可以直接复用
         const auto& corrective_matrices_ppe_velocity = corrective_matrices_explicit;
       
@@ -565,27 +686,27 @@ int main(int argc, char* argv[]) {
           throw;
         }
         
-        // 使用罚函数方法构建对称正定系统 K·p = f
-        // K = A^T A + D，f = A^T b（与测试程序保持一致）
+        // 步骤6.5：构建罚函数系统 K = A^T A + D，f = A^T b
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤7/8] 构建罚函数系统（对称正定）..." << std::flush;
+          std::cout << "  [步骤6.5/8] 构建罚函数系统（K = A^T A + D，f = A^T b）..." << std::flush;
         }
         Mat K_petsc = NULL;
         Vec f_petsc = NULL;
         
         try {
-          bool penalty_success = ppe_matrix_builder.BuildPenaltySystem(
-              A_petsc, b_petsc, fluid_particles, penalty_parameter, K_petsc, f_petsc);
+          bool penalty_build_success = ppe_matrix_builder.BuildPenaltySystem(
+              A_petsc, b_petsc, fluid_particles, penalty_parameter,
+              K_petsc, f_petsc);
           
-          if (!penalty_success) {
+          if (!penalty_build_success) {
             std::cerr << "\n错误：构建罚函数系统失败（时间步 " << iteration << "）" << std::endl;
             flush_log();
             if (A_petsc != NULL) MatDestroy(&A_petsc);
             if (b_petsc != NULL) VecDestroy(&b_petsc);
             if (K_petsc != NULL) MatDestroy(&K_petsc);
             if (f_petsc != NULL) VecDestroy(&f_petsc);
-            throw std::runtime_error("构建罚函数系统失败");
+            throw std::runtime_error("罚函数系统构建失败");
           }
           if (should_output_detail) {
             auto step_end = std::chrono::steady_clock::now();
@@ -603,17 +724,21 @@ int main(int argc, char* argv[]) {
           throw;
         }
         
-        // 步骤7：求解PPE（使用对称正定系统 K·p = f）
+        // 步骤7：求解PPE（使用罚函数方法求解 K·p = f）
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤8/8] 求解PPE（CG方法，对称正定系统）..." << std::flush;
+          std::cout << "  [步骤7/8] 求解PPE（罚函数方法，CG求解器，系统 K·p = f）..." << std::flush;
         }
         Vec p_petsc = NULL;
         bool solve_success = false;
         
         try {
+          // 使用罚函数系统 K·p = f 进行求解
           solve_success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc);
           
+          // 在求解失败分支中，在销毁K_petsc之前提取对角线数据（如果K_petsc仍然存在）
+          // 注意：这些变量需要在循环作用域内定义，以便在输出时使用
+          // 我们将在后面统一提取，这里先标记求解状态
           if (!solve_success) {
             std::cerr << "\n警告：PPE求解未收敛（时间步 " << iteration 
                       << ", 迭代次数: " << ppe_solver.GetLastIterations() 
@@ -624,6 +749,7 @@ int main(int argc, char* argv[]) {
               VecDestroy(&p_petsc);
               p_petsc = NULL;
             }
+            // 注意：K_petsc在清理之前仍然存在，我们将在后面统一提取对角线数据
             // 清理其他PETSc对象
             if (A_petsc != NULL) MatDestroy(&A_petsc);
             if (b_petsc != NULL) VecDestroy(&b_petsc);
@@ -665,10 +791,41 @@ int main(int argc, char* argv[]) {
           // 这里可以选择跳过压力修正步骤
         }
         
+        // ========== 提取 A^T A 和 K 矩阵的对角线系数（用于输出到VTK）==========
+        // 注意：即使求解失败，只要K_petsc仍然存在，我们也可以提取数据
+        std::vector<double> K_diagonal(num_fluid, 0.0);
+        std::vector<double> ATA_diagonal(num_fluid, 0.0);
+        
+        if (K_petsc != NULL) {
+          // 提取 K 矩阵的对角线
+          for (int i = 0; i < num_fluid; ++i) {
+            PetscInt row = static_cast<PetscInt>(i);
+            PetscInt col = static_cast<PetscInt>(i);
+            PetscScalar diag_val;
+            PetscErrorCode ierr = MatGetValue(K_petsc, row, col, &diag_val);
+            if (ierr == 0) {
+              K_diagonal[i] = static_cast<double>(diag_val);
+            }
+          }
+          
+          // 计算 D 的对角线（自由面粒子的惩罚项）
+          std::vector<double> D_diagonal(num_fluid, 0.0);
+          for (int i = 0; i < num_fluid; ++i) {
+            if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
+              D_diagonal[i] = penalty_parameter;
+            }
+          }
+          
+          // 计算 A^T A 的对角线 = K 的对角线 - D 的对角线
+          for (int i = 0; i < num_fluid; ++i) {
+            ATA_diagonal[i] = K_diagonal[i] - D_diagonal[i];
+          }
+        }
+        
         // 步骤8：Correction模块
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤9/9] 压力修正：更新速度和位置..." << std::flush;
+          std::cout << "  [步骤8/8] 压力修正：更新速度和位置..." << std::flush;
         }
         
         // 保存压力梯度（在位置更新之前计算）
@@ -729,8 +886,11 @@ int main(int argc, char* argv[]) {
           flush_log();
         }
         
-        // 步骤9：判断是否需要输出计算结果
+#if 1       // 步骤9：判断是否需要输出计算结果
         if (time_manager.ShouldOutput()) {
+#else 
+        if (1) {
+#endif
           ++output_count;
           std::cout << "\n  [输出] 输出计算结果（第 " << output_count << " 次）..." << std::flush;
           flush_log();
@@ -767,6 +927,22 @@ int main(int argc, char* argv[]) {
               
               // 追加粘性力向量（vector格式）- 使用explicit_force模块计算出的粘性力加速度
               file_operator.appendVTKVector(output_file, "viscous_force", viscous_acceleration);
+              
+              // 追加 K 矩阵的对角线系数
+              if (file_operator.appendVTKScalar(output_file, "K_diagonal", K_diagonal)) {
+                // 成功追加
+              } else {
+                std::cerr << "\n警告：无法追加 K 对角线系数到VTK文件" << std::endl;
+                flush_log();
+              }
+              
+              // 追加 A^T A 矩阵的对角线系数
+              if (file_operator.appendVTKScalar(output_file, "ATA_diagonal", ATA_diagonal)) {
+                // 成功追加
+              } else {
+                std::cerr << "\n警告：无法追加 A^T A 对角线系数到VTK文件" << std::endl;
+                flush_log();
+              }
               
               std::cout << " 完成: " << output_file << std::endl;
               flush_log();
@@ -805,17 +981,12 @@ int main(int argc, char* argv[]) {
           std::cout << "\n\n========== 模拟已完成 ==========" << std::endl;
           std::cout << "完成原因: 达到总时间 " << sim_config.total_time << " s" << std::endl;
           std::cout << "最终时间: " << std::fixed << std::setprecision(6) << current_time << " s" << std::endl;
+          std::cout << "总迭代次数: " << iteration << std::endl;
           flush_log();
           break;
         }
         
-        if (iteration >= sim_config.max_iterations) {
-          std::cout << "\n\n========== 模拟已结束 ==========" << std::endl;
-          std::cout << "完成原因: 达到最大迭代次数 " << sim_config.max_iterations << std::endl;
-          std::cout << "最终时间: " << std::fixed << std::setprecision(6) << current_time << " s" << std::endl;
-          flush_log();
-          break;
-        }
+        // 不再检查最大迭代次数，只根据总仿真时间判断
         
       } catch (const std::exception& e) {
         std::cerr << "\n\n========== 模拟循环中发生异常 ==========" << std::endl;
@@ -835,7 +1006,7 @@ int main(int argc, char* argv[]) {
     double final_time = time_manager.GetCurrentTime();
     
     std::cout << "\n========== 模拟结束统计 ==========" << std::endl;
-    std::cout << "总迭代次数: " << iteration << " / " << sim_config.max_iterations << std::endl;
+    std::cout << "总迭代次数: " << iteration << std::endl;
     std::cout << "最终模拟时间: " << std::fixed << std::setprecision(6) << final_time 
               << " s / " << sim_config.total_time << " s" << std::endl;
     std::cout << "总计算时间: " << elapsed_seconds << " 秒 (" 
@@ -848,8 +1019,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "输出文件数: " << output_count << std::endl;
     std::cout << "完成状态: " << (g_interrupted ? "用户中断" : 
-                                  (time_manager.IsSimulationFinished() ? "正常完成" : 
-                                   (iteration >= sim_config.max_iterations ? "达到最大迭代次数" : "未知"))) << std::endl;
+                                  (time_manager.IsSimulationFinished() ? "正常完成（达到总时间）" : "未知")) << std::endl;
     flush_log();
     
   } catch (const MPSException& e) {

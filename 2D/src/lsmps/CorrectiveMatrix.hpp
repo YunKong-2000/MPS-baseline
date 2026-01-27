@@ -39,6 +39,19 @@ public:
       double smoothing_radius,
       bool border_condition = false);
 
+  // 为单个粒子计算corrective matrix（仅考虑流体粒子）
+  // 该方法不考虑壁面粒子的影响，仅使用流体粒子之间的相互作用
+  // 参数：
+  //   particle_idx: 粒子索引
+  //   fluid_particles: 流体粒子对象
+  //   smoothing_radius: 平滑半径（r_e）
+  // 返回：corrective matrix（5x5），如果计算失败返回单位矩阵
+  Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>
+  ComputeCorrectiveMatrixFluidOnly(
+      int particle_idx,
+      const FluidParticle& fluid_particles,
+      double smoothing_radius);
+
   // 计算基函数值（用于流体邻域粒子）
   // 参数：
   //   dx, dy: 相对于中心粒子的相对位置
@@ -57,6 +70,21 @@ public:
       double dx, double dy,
       double normal_x, double normal_y,
       double smoothing_radius);
+
+  // 诊断用：构建系数矩阵C（用于计算条件数等诊断信息）
+  // 参数：
+  //   particle_idx: 粒子索引
+  //   fluid_particles: 流体粒子对象
+  //   solid_particles: 固体粒子对象
+  //   smoothing_radius: 平滑半径
+  //   border_condition: 边界条件类型，false表示第一类边界条件，true表示第二类边界条件
+  // 返回：系数矩阵C（5x5）
+  Eigen::MatrixXd BuildCoefficientMatrixForDiagnostics(
+      int particle_idx,
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      double smoothing_radius,
+      bool border_condition = false);
 
 private:
   // 构建系数矩阵C

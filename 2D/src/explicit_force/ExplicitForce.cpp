@@ -137,9 +137,13 @@ void ExplicitForce::UpdateVelocity(
     double time_step) {
   
   // 总加速度 = 粘性力加速度 + 重力加速度
+  // double2 total_acceleration = {
+  //     viscous_acceleration.x + gravity_acceleration.x,
+  //     viscous_acceleration.y + gravity_acceleration.y
+  // };
   double2 total_acceleration = {
-      viscous_acceleration.x + gravity_acceleration.x,
-      viscous_acceleration.y + gravity_acceleration.y
+      gravity_acceleration.x,
+      gravity_acceleration.y
   };
   
   // 显式时间积分：只更新速度作为临时速度，不更新位置

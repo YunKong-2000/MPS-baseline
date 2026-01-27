@@ -36,6 +36,48 @@ CorrectiveMatrix::ComputeCorrectiveMatrix(
   return corrective_matrix;
 }
 
+Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>
+CorrectiveMatrix::ComputeCorrectiveMatrixFluidOnly(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    double smoothing_radius) {
+  
+  // 统计流体邻域粒子数
+  int num_fluid_neighbors = fluid_particles.fluid_neighbour_list[particle_idx].size();
+  
+  // 如果流体邻域粒子数不足，返回单位矩阵
+  // 至少需要5个邻域粒子才能求解5x5系统
+  if (num_fluid_neighbors < MATRIX_SIZE) {
+    return Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>::Identity();
+  }
+  
+  // 构建系数矩阵C（仅考虑流体粒子）
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  Eigen::MatrixXd C = Eigen::MatrixXd::Zero(BASIS_SIZE, BASIS_SIZE);
+  
+  // 只处理流体邻域粒子
+  // 对每个j流体邻域粒子，计算权重和基函数，然后累加到C中
+  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+    const double2& pos_j = fluid_particles.position[j];
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) continue;
+    double weight = WeightFunction(dist, smoothing_radius);
+    Eigen::Vector<double, BASIS_SIZE> basis = ComputeBasisFunctions(dx, dy, smoothing_radius);
+    C += weight * basis * basis.transpose();
+  }
+  
+  // 检查矩阵是否可逆
+  if (!IsMatrixInvertible(C)) {
+    return Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>::Identity();
+  }
+  
+  // 计算corrective matrix: C^(-1)
+  Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE> corrective_matrix = C.inverse();
+  return corrective_matrix;
+}
+
 Eigen::MatrixXd
 CorrectiveMatrix::BuildCoefficientMatrix(
     int particle_idx,
@@ -131,6 +173,18 @@ CorrectiveMatrix::IsMatrixInvertible(
   // 使用行列式判断矩阵是否可逆
   double determinant = matrix.determinant();
   return std::abs(determinant) > tolerance;
+}
+
+Eigen::MatrixXd
+CorrectiveMatrix::BuildCoefficientMatrixForDiagnostics(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    double smoothing_radius,
+    bool border_condition) {
+  // 直接调用私有的BuildCoefficientMatrix方法
+  return BuildCoefficientMatrix(particle_idx, fluid_particles, solid_particles,
+                                smoothing_radius, border_condition);
 }
 
 } // namespace mps2D
