@@ -446,48 +446,24 @@ int main(int argc, char** argv) {
   std::cout << "  A矩阵大小: " << A_m << " x " << A_n << std::endl;
   std::cout << "  A矩阵非零元素数: " << A_nnz << std::endl;
   
-  // 构建罚函数系统
-  std::cout << "\n构建罚函数系统..." << std::endl;
-  Mat K_petsc = NULL;
-  Vec f_petsc = NULL;
-  double penalty_parameter = 1e3;
-  
-  if (!matrix_builder.BuildPenaltySystem(
-          A_petsc, b_petsc, fluid_particles, penalty_parameter,
-          K_petsc, f_petsc)) {
-    std::cerr << "错误：构建罚函数系统失败" << std::endl;
-    MatDestroy(&A_petsc);
-    VecDestroy(&b_petsc);
-    return 1;
-  }
-  
-  PetscInt K_m, K_n;
-  MatGetSize(K_petsc, &K_m, &K_n);
-  MatInfo K_info;
-  MatGetInfo(K_petsc, MAT_GLOBAL_SUM, &K_info);
-  PetscInt K_nnz = static_cast<PetscInt>(K_info.nz_used);
-  std::cout << "  K矩阵大小: " << K_m << " x " << K_n << std::endl;
-  std::cout << "  K矩阵非零元素数: " << K_nnz << std::endl;
-  
-  // 求解PPE方程
-  std::cout << "\n求解PPE方程（罚函数方法，CG求解器）..." << std::endl;
+  // 求解PPE方程（直接求解 A·p = b）
+  std::cout << "\n求解PPE方程（直接求解 A·p = b）..." << std::endl;
   PPESolver::SolverConfig solver_config;
-  solver_config.solver_type = PPESolver::SolverType::CG;
+  solver_config.solver_type = PPESolver::SolverType::BICGSTAB;
   solver_config.max_iterations = 5000;
   solver_config.tolerance = 1e-6;
   solver_config.force_iterative = true;
-  solver_config.is_symmetric_positive_definite = true;
+  solver_config.is_symmetric_positive_definite = false;
+  solver_config.restart = 30;
   
   PPESolver ppe_solver(solver_config);
   Vec p_petsc = NULL;
   
   auto start_time = std::chrono::high_resolution_clock::now();
-  if (!ppe_solver.Solve(K_petsc, f_petsc, p_petsc)) {
+  if (!ppe_solver.Solve(A_petsc, b_petsc, p_petsc)) {
     std::cerr << "错误：PPE求解失败" << std::endl;
     MatDestroy(&A_petsc);
     VecDestroy(&b_petsc);
-    MatDestroy(&K_petsc);
-    VecDestroy(&f_petsc);
     if (p_petsc != NULL) {
       VecDestroy(&p_petsc);
     }
@@ -760,8 +736,6 @@ int main(int argc, char** argv) {
   // 清理
   MatDestroy(&A_petsc);
   VecDestroy(&b_petsc);
-  MatDestroy(&K_petsc);
-  VecDestroy(&f_petsc);
   if (p_petsc != NULL) {
     VecDestroy(&p_petsc);
   }

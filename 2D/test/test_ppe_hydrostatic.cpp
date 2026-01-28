@@ -380,8 +380,8 @@ int main() {
   std::cout << "    零值数量: " << zero_diag_count_all << " / " << num_fluid_particles << std::endl;
   
   // 理论值：对于压力拉普拉斯算子，对角线元素应该是负值
-  // 对角线系数 = -coeff_factor * sum(weight / dist * (C3 + C4) * basis)
-  // 其中 coeff_factor = 2.0 / (smoothing_radius * rho)
+  // 当前实现与 PPEMatrixBuilder 一致：
+  // 对角线系数 = - (2/(r_e^2 * ρ)) * Σ_{j∈fluid} w_ij * ([M_{i,2}+M_{i,3}] P_ij)
   if (negative_diag_count == 0) {
     std::cerr << "  ⚠️  警告：所有对角线元素都是非负值，可能不符合压力拉普拉斯算子的离散形式！" << std::endl;
   }
@@ -394,7 +394,8 @@ int main() {
   std::cout << "\n[分析] 计算右边项的详细贡献..." << std::endl;
   
   // 系数因子（与BuildPPEMatrixPetsc中使用的相同）
-  double coeff_factor = 2.0 / (smoothing_radius * rho);
+  // 2 / (r_e^2 * ρ)
+  double coeff_factor = 2.0 / (smoothing_radius * smoothing_radius * rho);
   
   // 计算每个粒子的速度散度贡献和压力边界条件贡献
   std::vector<double> divergence_contribution(num_fluid_particles, 0.0);
@@ -410,11 +411,11 @@ int main() {
     Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2_velocity = corrective_matrices_velocity[i].row(1);
     
     // 提取压力corrective matrix的行向量（用于压力拉普拉斯算子计算，第二类边界条件）
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_pressure = corrective_matrices_pressure[i].row(2);
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4_pressure = corrective_matrices_pressure[i].row(3);
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4_pressure = C3_pressure + C4_pressure;
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_pressure = corrective_matrices_pressure[i].row(2);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M3_pressure = corrective_matrices_pressure[i].row(3);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_plus_M3_pressure = M2_pressure + M3_pressure;
     
-    double divergence = 0.0;
+    double divergence_sum = 0.0;
     double wall_pressure_term = 0.0;
     
     // 遍历流体邻域粒子
@@ -437,11 +438,11 @@ int main() {
           corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
       
       // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
-      double dux_dr = (vel_j.x - vel_i.x) / dist;
-      double duy_dr = (vel_j.y - vel_i.y) / dist;
+      double dvx = vel_j.x - vel_i.x;
+      double dvy = vel_j.y - vel_i.y;
       double C1P = (C1_velocity * basis)(0, 0);
       double C2P = (C2_velocity * basis)(0, 0);
-      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+      divergence_sum += weight * (C1P * dvx + C2P * dvy);
     }
     
     // 处理壁面邻域粒子
@@ -470,20 +471,22 @@ int main() {
               dx, dy, normal.x, normal.y, smoothing_radius);
       
       // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
-      double dux_dr = (vel_wall.x - vel_i.x) / dist;
-      double duy_dr = (vel_wall.y - vel_i.y) / dist;
+      double dvx = vel_wall.x - vel_i.x;
+      double dvy = vel_wall.y - vel_i.y;
       double C1P = (C1_velocity * basis_velocity)(0, 0);
       double C2P = (C2_velocity * basis_velocity)(0, 0);
-      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+      divergence_sum += weight * (C1P * dvx + C2P * dvy);
       
       // 计算壁面压力边界条件项（使用压力corrective matrix，第二类边界条件）
       double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;
-      double wall_pressure_coeff = -weight * (rho * n_dot_g) * (C3_plus_C4_pressure * basis_pressure)(0, 0);
+      // 文档壁面项：w_ij * r_e * ρ (n·g) * ([M2+M3] Q_ij)
+      double wall_pressure_coeff = weight * smoothing_radius * rho * n_dot_g *
+          (M2_plus_M3_pressure * basis_pressure)(0, 0);
       wall_pressure_term += wall_pressure_coeff;
     }
     
     // 计算贡献
-    divergence_contribution[i] = (1.0 / time_step) * divergence;
+    divergence_contribution[i] = (1.0 / (smoothing_radius * time_step)) * divergence_sum;
     wall_pressure_contribution[i] = coeff_factor * wall_pressure_term;
     b_total_recomputed[i] = divergence_contribution[i] + wall_pressure_contribution[i];
   }
@@ -631,11 +634,11 @@ int main() {
     
     Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1_velocity = corrective_matrices_velocity[i].row(0);
     Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2_velocity = corrective_matrices_velocity[i].row(1);
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_pressure = corrective_matrices_pressure[i].row(2);
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4_pressure = corrective_matrices_pressure[i].row(3);
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4_pressure = C3_pressure + C4_pressure;
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_pressure = corrective_matrices_pressure[i].row(2);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M3_pressure = corrective_matrices_pressure[i].row(3);
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_plus_M3_pressure = M2_pressure + M3_pressure;
     
-    double divergence = 0.0;
+    double divergence_sum = 0.0;
     double wall_pressure_term = 0.0;
     
     // 遍历流体邻域粒子
@@ -655,11 +658,11 @@ int main() {
       Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
           corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
       
-      double dux_dr = (vel_j.x - vel_i.x) / dist;
-      double duy_dr = (vel_j.y - vel_i.y) / dist;
+      double dvx = vel_j.x - vel_i.x;
+      double dvy = vel_j.y - vel_i.y;
       double C1P = (C1_velocity * basis)(0, 0);
       double C2P = (C2_velocity * basis)(0, 0);
-      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+      divergence_sum += weight * (C1P * dvx + C2P * dvy);
     }
     
     // 处理壁面邻域粒子
@@ -683,18 +686,19 @@ int main() {
           corrective_matrix_calc.ComputeBasisFunctionsForWall(
               dx, dy, normal.x, normal.y, smoothing_radius);
       
-      double dux_dr = (vel_wall.x - vel_i.x) / dist;
-      double duy_dr = (vel_wall.y - vel_i.y) / dist;
+      double dvx = vel_wall.x - vel_i.x;
+      double dvy = vel_wall.y - vel_i.y;
       double C1P = (C1_velocity * basis_velocity)(0, 0);
       double C2P = (C2_velocity * basis_velocity)(0, 0);
-      divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+      divergence_sum += weight * (C1P * dvx + C2P * dvy);
       
       double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;
-      double wall_pressure_coeff = -weight * (rho * n_dot_g) * (C3_plus_C4_pressure * basis_pressure)(0, 0);
+      double wall_pressure_coeff = weight * smoothing_radius * rho * n_dot_g *
+          (M2_plus_M3_pressure * basis_pressure)(0, 0);
       wall_pressure_term += wall_pressure_coeff;
     }
     
-    divergence_contribution_no_explicit[i] = (1.0 / time_step) * divergence;
+    divergence_contribution_no_explicit[i] = (1.0 / (smoothing_radius * time_step)) * divergence_sum;
     wall_pressure_contribution_no_explicit[i] = coeff_factor * wall_pressure_term;
     b_total_no_explicit[i] = divergence_contribution_no_explicit[i] + wall_pressure_contribution_no_explicit[i];
   }
@@ -801,7 +805,7 @@ int main() {
     
     // 计算参数
     std::cout << "\n        计算参数：" << std::endl;
-    std::cout << "          coeff_factor = 2.0 / (smoothing_radius * rho) = " 
+    std::cout << "          coeff_factor = 2.0 / (smoothing_radius^2 * rho) = " 
               << std::scientific << std::setprecision(6) << coeff_factor << std::fixed << std::endl;
     std::cout << "          smoothing_radius = " << smoothing_radius << " m" << std::endl;
     std::cout << "          rho = " << rho << " kg/m³" << std::endl;
@@ -921,126 +925,23 @@ int main() {
   }
   // ========== 提前输出结束 ==========
   
-  // ========== 构建罚函数系统 K = A^T A + D，f = A^T b ==========
-  std::cout << "\n构建罚函数系统（K = A^T A + D，f = A^T b）..." << std::endl;
-  const double penalty_parameter = 10000;  // 罚函数参数μ（与main.cpp一致）
-  
-  Mat K_petsc = NULL;
-  Vec f_petsc = NULL;
-  
-  bool penalty_build_success = matrix_builder.BuildPenaltySystem(
-      A_petsc, b_petsc, fluid_particles, penalty_parameter,
-      K_petsc, f_petsc);
-  
-  if (!penalty_build_success) {
-    std::cerr << "错误：构建罚函数系统失败" << std::endl;
-    MatDestroy(&A_petsc);
-    VecDestroy(&b_petsc);
-    if (K_petsc != NULL) MatDestroy(&K_petsc);
-    if (f_petsc != NULL) VecDestroy(&f_petsc);
-    return 1;
-  }
-  
-  std::cout << "  罚函数系统构建完成" << std::endl;
-  std::cout << "  罚函数参数: " << penalty_parameter << std::endl;
-  
-  // ========== 提取并输出 A^T A 的对角线系数 ==========
-  std::cout << "\n提取 A^T A 矩阵的对角线系数..." << std::endl;
-  
-  // 从 K 矩阵中提取对角线（K = A^T A + D）
-  std::vector<double> K_diagonal(num_fluid_particles);
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    PetscInt row = static_cast<PetscInt>(i);
-    PetscInt col = static_cast<PetscInt>(i);
-    PetscScalar diag_val;
-    PetscErrorCode ierr = MatGetValue(K_petsc, row, col, &diag_val);
-    if (ierr != 0) {
-      std::cerr << "警告：无法获取矩阵对角线元素 " << i << std::endl;
-      K_diagonal[i] = 0.0;
-    } else {
-      K_diagonal[i] = static_cast<double>(diag_val);
-    }
-  }
-  
-  // 计算 D 的对角线（自由面粒子的惩罚项）
-  std::vector<double> D_diagonal(num_fluid_particles, 0.0);
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-      D_diagonal[i] = penalty_parameter;
-    }
-  }
-  
-  // 计算 A^T A 的对角线 = K 的对角线 - D 的对角线
-  std::vector<double> ATA_diagonal(num_fluid_particles);
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    ATA_diagonal[i] = K_diagonal[i] - D_diagonal[i];
-  }
-  
-  // 统计信息
-  double min_ATA_diag = std::numeric_limits<double>::max();
-  double max_ATA_diag = std::numeric_limits<double>::lowest();
-  double sum_ATA_diag = 0.0;
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    double diag = ATA_diagonal[i];
-    if (diag < min_ATA_diag) min_ATA_diag = diag;
-    if (diag > max_ATA_diag) max_ATA_diag = diag;
-    sum_ATA_diag += diag;
-  }
-  double avg_ATA_diag = sum_ATA_diag / num_fluid_particles;
-  
-  std::cout << "  A^T A 对角线元素统计:" << std::endl;
-  std::cout << "    最小值: " << std::scientific << std::setprecision(3) << min_ATA_diag << std::fixed << std::endl;
-  std::cout << "    最大值: " << std::scientific << std::setprecision(3) << max_ATA_diag << std::fixed << std::endl;
-  std::cout << "    平均值: " << std::scientific << std::setprecision(3) << avg_ATA_diag << std::fixed << std::endl;
-  
-  // ========== 提取并输出 A^T b（右边项 f）==========
-  std::cout << "\n提取 A^T b（右边项 f）..." << std::endl;
-  
-  std::vector<PetscScalar> f_values(num_fluid_particles);
-  VecGetValues(f_petsc, num_fluid_particles, indices.data(), f_values.data());
-  
-  // 统计信息
-  double min_f = std::numeric_limits<double>::max();
-  double max_f = std::numeric_limits<double>::lowest();
-  double sum_abs_f = 0.0;
-  PetscReal f_norm;
-  VecNorm(f_petsc, NORM_2, &f_norm);
-  
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    double f_val = static_cast<double>(f_values[i]);
-    double abs_f = std::abs(f_val);
-    if (f_val < min_f) min_f = f_val;
-    if (f_val > max_f) max_f = f_val;
-    sum_abs_f += abs_f;
-  }
-  double avg_abs_f = sum_abs_f / num_fluid_particles;
-  
-  std::cout << "  A^T b（右边项 f）统计:" << std::endl;
-  std::cout << "    最小值: " << std::scientific << std::setprecision(3) << min_f << std::fixed << std::endl;
-  std::cout << "    最大值: " << std::scientific << std::setprecision(3) << max_f << std::fixed << std::endl;
-  std::cout << "    平均值（绝对值）: " << std::scientific << std::setprecision(3) << avg_abs_f << std::fixed << std::endl;
-  std::cout << "    范数: " << std::scientific << std::setprecision(3) << f_norm << std::fixed << std::endl;
-  
-  // ========== 求解PPE方程（使用罚函数方法求解 K·p = f）==========
-  // 注意：罚函数系统 K·p = f 是对称正定的，使用CG方法求解
-  std::cout << "\n求解PPE方程（罚函数方法，CG求解器，系统 K·p = f）..." << std::endl;
+  // ========== 求解PPE方程（直接求解 A·p = b）==========
+  std::cout << "\n求解PPE方程（直接求解 A·p = b）..." << std::endl;
   PPESolver::SolverConfig solver_config;
-  solver_config.solver_type = PPESolver::SolverType::CG;  // 使用CG方法（因为K是对称正定的）
+  solver_config.solver_type = PPESolver::SolverType::BICGSTAB;  // 推荐用于非对称矩阵
   solver_config.max_iterations = 10000;  // 最大迭代次数
   solver_config.tolerance = 1e-6;  // 容差
   solver_config.force_iterative = true;  // 强制使用迭代求解器
-  solver_config.is_symmetric_positive_definite = true;  // 罚函数系统 K·p = f 是对称正定的
-  solver_config.restart = 0;  // CG不需要restart参数
+  solver_config.is_symmetric_positive_definite = false;
+  solver_config.restart = 30;
   
   PPESolver ppe_solver(solver_config);
   Vec p_petsc = NULL;  // 压力解向量
   
-  if (!ppe_solver.Solve(K_petsc, f_petsc, p_petsc)) {
+  if (!ppe_solver.Solve(A_petsc, b_petsc, p_petsc)) {
     std::cerr << "错误：PPE求解失败" << std::endl;
     MatDestroy(&A_petsc);
     VecDestroy(&b_petsc);
-    MatDestroy(&K_petsc);
-    VecDestroy(&f_petsc);
     if (p_petsc != NULL) {
       VecDestroy(&p_petsc);
     }
@@ -1119,7 +1020,7 @@ int main() {
   VecDestroy(&x_theoretical);
   VecDestroy(&b_computed);
   
-  // 使用LSMPS计算压力梯度（第二类边界条件）
+  // 使用LSMPS计算压力梯度（第二类边界条件，按diffuse_derivative_constraint.md）
   std::cout << "\n使用LSMPS计算压力梯度..." << std::endl;
   std::vector<double2> pressure_gradient(num_fluid_particles);
   
@@ -1127,12 +1028,12 @@ int main() {
     const double2& pos_i = fluid_particles.position[i];
     double p_i = pressure_values[i];
     
-    // 提取压力corrective matrix的前两行（用于梯度计算，第二类边界条件）
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1 = corrective_matrices_pressure[i].row(0);  // x方向
-    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2 = corrective_matrices_pressure[i].row(1);  // y方向
+    // 提取 [M_{i,0}, M_{i,1}]
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M0 = corrective_matrices_pressure[i].row(0);  // x方向
+    Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M1 = corrective_matrices_pressure[i].row(1);  // y方向
     
-    double grad_x = 0.0;
-    double grad_y = 0.0;
+    double sum_x = 0.0;
+    double sum_y = 0.0;
     
     // 处理流体邻域粒子
     for (int j : fluid_particles.fluid_neighbour_list[i]) {
@@ -1147,20 +1048,21 @@ int main() {
         continue;
       }
       
-      double d_ij = (p_j - p_i) / dist;
+      double dp = p_j - p_i;
       double weight = WeightFunction(dist, smoothing_radius);
       
       // 计算基函数（标准基函数）
       Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
           corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
       
-      // 计算梯度贡献
-      grad_x += weight * d_ij * (C1 * basis)(0, 0);
-      grad_y += weight * d_ij * (C2 * basis)(0, 0);
+      double M0P = (M0 * basis)(0, 0);
+      double M1P = (M1 * basis)(0, 0);
+      sum_x += weight * dp * M0P;
+      sum_y += weight * dp * M1P;
     }
     
     // 处理壁面邻域粒子（第二类边界条件）
-    // 壁面处压力梯度的法向分量：dp/dn = -rho * g * n_y（对于静水压力）
+    // 壁面处压力梯度的法向分量：dp/dn = ρ (n · g)
     for (int j : fluid_particles.solid_neighbour_list[i]) {
       const double2& pos_j = solid_particles.position[j];
       const double2& normal = solid_particles.normal_vector[j];
@@ -1180,18 +1082,24 @@ int main() {
           corrective_matrix_calc.ComputeBasisFunctionsForWall(
               dx, dy, normal.x, normal.y, smoothing_radius);
       
-      // 壁面处压力梯度的法向分量：dp/dn = -rho * g * n_y（对于静水压力）
       // 归一化法向量
       double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
-      double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
-      double d_ij = -rho * g * n_y;
+      if (nn < 1e-10) {
+        continue;
+      }
+      double n_x = normal.x / nn;
+      double n_y = normal.y / nn;
+
+      double dp_dn = rho * (n_x * gravity_x + n_y * gravity_y);
       
-      // 计算梯度贡献
-      grad_x += weight * d_ij * (C1 * basis_wall)(0, 0);
-      grad_y += weight * d_ij * (C2 * basis_wall)(0, 0);
+      double M0Q = (M0 * basis_wall)(0, 0);
+      double M1Q = (M1 * basis_wall)(0, 0);
+      sum_x += weight * smoothing_radius * dp_dn * M0Q;
+      sum_y += weight * smoothing_radius * dp_dn * M1Q;
     }
     
-    pressure_gradient[i] = {grad_x, grad_y};
+    double inv_re = 1.0 / smoothing_radius;
+    pressure_gradient[i] = {inv_re * sum_x, inv_re * sum_y};
   }
   
   // 计算梯度大小
@@ -1297,46 +1205,6 @@ int main() {
       std::cerr << "  警告：无法追加自由面类型到VTK文件" << std::endl;
     }
     
-    // 追加 A^T A 的对角线元素
-    std::vector<double> ATA_diagonal_double(num_fluid_particles);
-    for (int i = 0; i < num_fluid_particles; ++i) {
-      ATA_diagonal_double[i] = ATA_diagonal[i];
-    }
-    if (file_op.appendVTKScalar(result_filename, "ATA_diagonal", ATA_diagonal_double)) {
-      std::cout << "  A^T A 对角线元素已追加" << std::endl;
-    } else {
-      std::cerr << "  警告：无法追加 A^T A 对角线元素到VTK文件" << std::endl;
-    }
-    
-    // 追加 A^T b（右边项 f）
-    std::vector<double> f_values_double(num_fluid_particles);
-    for (int i = 0; i < num_fluid_particles; ++i) {
-      f_values_double[i] = static_cast<double>(f_values[i]);
-    }
-    if (file_op.appendVTKScalar(result_filename, "ATb", f_values_double)) {
-      std::cout << "  A^T b（右边项 f）已追加" << std::endl;
-    } else {
-      std::cerr << "  警告：无法追加 A^T b 到VTK文件" << std::endl;
-    }
-    
-    // 追加 K 的对角线元素（用于对比）
-    std::vector<double> K_diagonal_double(num_fluid_particles);
-    for (int i = 0; i < num_fluid_particles; ++i) {
-      K_diagonal_double[i] = K_diagonal[i];
-    }
-    if (file_op.appendVTKScalar(result_filename, "K_diagonal", K_diagonal_double)) {
-      std::cout << "  K 对角线元素已追加" << std::endl;
-    } else {
-      std::cerr << "  警告：无法追加 K 对角线元素到VTK文件" << std::endl;
-    }
-    
-    // 追加 D 的对角线元素（用于对比）
-    if (file_op.appendVTKScalar(result_filename, "D_diagonal", D_diagonal)) {
-      std::cout << "  D 对角线元素已追加" << std::endl;
-    } else {
-      std::cerr << "  警告：无法追加 D 对角线元素到VTK文件" << std::endl;
-    }
-    
     // 追加调试信息（原始矩阵A的对角线元素和右边项b）
     if (matrix_builder.WriteDebugInfoToVTK(fluid_particles, A_petsc, b_petsc, result_filename)) {
       std::cout << "  调试信息（原始矩阵A的对角线元素、右边项b等）已追加" << std::endl;
@@ -1418,12 +1286,6 @@ int main() {
   // 清理PETSc对象（按照创建顺序的逆序销毁）
   if (p_petsc != NULL) {
     VecDestroy(&p_petsc);
-  }
-  if (f_petsc != NULL) {
-    VecDestroy(&f_petsc);
-  }
-  if (K_petsc != NULL) {
-    MatDestroy(&K_petsc);
   }
   if (b_petsc != NULL) {
     VecDestroy(&b_petsc);

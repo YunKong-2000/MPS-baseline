@@ -58,6 +58,10 @@ VelocityGradient ComputeVelocityGradient(
   grad.grad_yx = 0.0;  // ∂v_y/∂x
   grad.grad_yy = 0.0;  // ∂v_y/∂y
   
+  // 使用与 LSMPS moment 矩阵相同的基函数定义
+  // P_ij = [x/r_e, y/r_e, x^2/r_e^2, y^2/r_e^2, x y / r_e^2]
+  CorrectiveMatrix corrective_matrix_calc;
+  
   // 处理流体邻域粒子
   for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
     const double2& pos_j = fluid_particles.position[j];
@@ -68,28 +72,22 @@ VelocityGradient ComputeVelocityGradient(
     if (dist < 1e-10 || dist > smoothing_radius) continue;
     
     const double2& v_j = vector_field[j];
-    double dv_x = v_j.x - v_i.x;
+    double dv_x = v_j.x - v_i.x;  // 直接使用速度差，不除以dist
     double dv_y = v_j.y - v_i.y;
-    double d_ij_x = dv_x / dist;  // (v_x_j - v_x_i) / r_ij
-    double d_ij_y = dv_y / dist;  // (v_y_j - v_y_i) / r_ij
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+    // 计算基函数 P_ij（使用标准LSMPS基函数）
+    Eigen::Vector<double, 5> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
     
-    // 计算梯度贡献
-    double C1P = (C1 * P)(0, 0);
-    double C2P = (C2 * P)(0, 0);
+    // 根据文档：∇φ_i = (1/r_e) Σ_j w_ij (φ_j - φ_i) [M_{i,0}; M_{i,1}] P_ij
+    double M0P = (C1 * basis)(0, 0);  // M_{i,0} * P_ij
+    double M1P = (C2 * basis)(0, 0);  // M_{i,1} * P_ij
     
-    grad.grad_xx += weight * d_ij_x * C1P;  // ∂v_x/∂x
-    grad.grad_xy += weight * d_ij_x * C2P;  // ∂v_x/∂y
-    grad.grad_yx += weight * d_ij_y * C1P;  // ∂v_y/∂x
-    grad.grad_yy += weight * d_ij_y * C2P;  // ∂v_y/∂y
+    grad.grad_xx += weight * dv_x * M0P;  // ∂v_x/∂x
+    grad.grad_xy += weight * dv_x * M1P;  // ∂v_x/∂y
+    grad.grad_yx += weight * dv_y * M0P;  // ∂v_y/∂x
+    grad.grad_yy += weight * dv_y * M1P;  // ∂v_y/∂y
   }
   
   // 处理固体邻域粒子（壁面粒子）
@@ -105,29 +103,30 @@ VelocityGradient ComputeVelocityGradient(
     
     // 壁面处速度为零（第一类边界条件：Dirichlet边界条件）
     const double2 v_wall = {0.0, 0.0};
-    double dv_x = v_wall.x - v_i.x;
+    double dv_x = v_wall.x - v_i.x;  // 直接使用速度差，不除以dist
     double dv_y = v_wall.y - v_i.y;
-    double d_ij_x = dv_x / dist;
-    double d_ij_y = dv_y / dist;
     double weight = WeightFunction(dist, smoothing_radius);
     
     // 第一类边界条件使用标准基函数（与流体粒子相同）
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+    Eigen::Vector<double, 5> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
     
     // 计算梯度贡献
-    double C1P = (C1 * P)(0, 0);
-    double C2P = (C2 * P)(0, 0);
+    double M0P = (C1 * basis)(0, 0);
+    double M1P = (C2 * basis)(0, 0);
     
-    grad.grad_xx += weight * d_ij_x * C1P;
-    grad.grad_xy += weight * d_ij_x * C2P;
-    grad.grad_yx += weight * d_ij_y * C1P;
-    grad.grad_yy += weight * d_ij_y * C2P;
+    grad.grad_xx += weight * dv_x * M0P;
+    grad.grad_xy += weight * dv_x * M1P;
+    grad.grad_yx += weight * dv_y * M0P;
+    grad.grad_yy += weight * dv_y * M1P;
   }
+  
+  // 统一乘以 1 / r_e（根据文档公式）
+  double inv_re = 1.0 / smoothing_radius;
+  grad.grad_xx *= inv_re;
+  grad.grad_xy *= inv_re;
+  grad.grad_yx *= inv_re;
+  grad.grad_yy *= inv_re;
   
   return grad;
 }
@@ -158,13 +157,21 @@ VelocityLaplacian ComputeVelocityLaplacian(
 const double2& pos_i = fluid_particles.position[particle_idx];
 const double2& v_i = vector_field[particle_idx];
 
-// 提取corrective matrix）
-Eigen::Matrix<double, 1, 5> C3 = corrective_matrix.row(2);  // x方向
-Eigen::Matrix<double, 1, 5> C4 = corrective_matrix.row(3);  // y方向
+// 提取 moment matrix 逆矩阵的第3行和第4行（用于拉普拉斯算子计算）
+// 文档中对应 [M_{i,2} + M_{i,3}]
+Eigen::RowVector<double, 5> M2 = corrective_matrix.row(2);  // x² 项
+Eigen::RowVector<double, 5> M3 = corrective_matrix.row(3);  // y² 项
+Eigen::RowVector<double, 5> M2_plus_M3 = M2 + M3;
 
 VelocityLaplacian laplacian;
 laplacian.laplacian_x = 0.0;
 laplacian.laplacian_y = 0.0;
+
+// 标量因子：2 / r_e^2（根据文档公式）
+const double scalar_factor = 2.0 / (smoothing_radius * smoothing_radius);
+
+// 使用与 LSMPS moment 矩阵相同的基函数定义
+CorrectiveMatrix corrective_matrix_calc;
 
 // 处理流体邻域粒子
 for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
@@ -176,29 +183,20 @@ for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
   if (dist < 1e-10 || dist > smoothing_radius) continue;
   
   const double2& v_j = vector_field[j];
-  double dv_x = v_j.x - v_i.x;
+  double dv_x = v_j.x - v_i.x;  // 直接使用速度差，不除以dist
   double dv_y = v_j.y - v_i.y;
-  double d_ij_x = dv_x / dist;  // (v_x_j - v_x_i) / r_ij
-  double d_ij_y = dv_y / dist;  // (v_y_j - v_y_i) / r_ij
   double weight = WeightFunction(dist, smoothing_radius);
   
-  // 计算基函数
-  Eigen::Matrix<double, 5, 1> P;
-  P << dx / dist,                                    // x/r
-       dy / dist,                                    // y/r
-       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+  // 计算基函数 P_ij（使用标准LSMPS基函数）
+  Eigen::Vector<double, 5> basis =
+      corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
   
-  // 计算拉普拉斯算子贡献
-  double scalar_laplacian = 2.0 / smoothing_radius;
-  double C3P = (C3 * P)(0, 0);
-  double C4P = (C4 * P)(0, 0);
+  // 根据文档：∇²φ_i = (2/r_e^2) Σ_j w_ij (φ_j - φ_i) [M_{i,2} + M_{i,3}] P_ij
+  double M2M3P = (M2_plus_M3 * basis)(0, 0);
+  double coeff = scalar_factor * weight * M2M3P;
   
-  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C3P;  // ∂^2v_x/∂x^2
-  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C4P;  // ∂^2v_x/∂y^2
-  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C3P;  // ∂^2v_y/∂x^2 
-  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C4P;  // ∂^2v_y/∂y^2
+  laplacian.laplacian_x += coeff * dv_x;  // ∂^2v_x/∂x^2 + ∂^2v_x/∂y^2
+  laplacian.laplacian_y += coeff * dv_y;  // ∂^2v_y/∂x^2 + ∂^2v_y/∂y^2
 }
 
 // 处理固体邻域粒子（壁面粒子）
@@ -214,29 +212,20 @@ for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
   
   // 壁面处速度为零（第一类边界条件：Dirichlet边界条件）
   const double2 v_wall = {0.0, 0.0};
-  double dv_x = v_wall.x - v_i.x;
+  double dv_x = v_wall.x - v_i.x;  // 直接使用速度差，不除以dist
   double dv_y = v_wall.y - v_i.y;
-  double d_ij_x = dv_x / dist;
-  double d_ij_y = dv_y / dist;
   double weight = WeightFunction(dist, smoothing_radius);
   
   // 第一类边界条件使用标准基函数（与流体粒子相同）
-  Eigen::Matrix<double, 5, 1> P;
-  P << dx / dist,                                    // x/r
-       dy / dist,                                    // y/r
-       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
+  Eigen::Vector<double, 5> basis =
+      corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
   
-  // 计算梯度贡献
-  double scalar_laplacian = 2.0 / smoothing_radius;
-  double C3P = (C3 * P)(0, 0);
-  double C4P = (C4 * P)(0, 0);
+  // 计算拉普拉斯算子贡献
+  double M2M3P = (M2_plus_M3 * basis)(0, 0);
+  double coeff = scalar_factor * weight * M2M3P;
   
-  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C3P;
-  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C3P;
-  laplacian.laplacian_x += scalar_laplacian * weight * d_ij_x * C4P;
-  laplacian.laplacian_y += scalar_laplacian * weight * d_ij_y * C4P;
+  laplacian.laplacian_x += coeff * dv_x;
+  laplacian.laplacian_y += coeff * dv_y;
 }
 
 return laplacian;

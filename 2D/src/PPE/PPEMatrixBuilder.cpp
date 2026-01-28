@@ -87,12 +87,20 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   CorrectiveMatrix corrective_matrix_calc;
   
   // 系数矩阵的系数因子（统一用于所有粒子）
-  double coeff_factor = 2.0 / (smoothing_radius * density);
+  // 根据文档：拉普拉斯算子前的系数为 2 / (r_s^2)
+  // 这里同时除以密度 density
+  double coeff_factor = 2.0 / (smoothing_radius * smoothing_radius * density);
   
   // 遍历所有流体粒子，构建系数矩阵和右边项
-  // 统一使用LSMPS离散方法（所有粒子，包括自由面粒子）
   for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
-    // 所有粒子都使用相同的LSMPS离散方法
+    // 自由面粒子：使用行修改法，直接施加 p_i = 0
+    if (fluid_particles.surface_type[particle_idx] == SurfaceType::SURFACE) {
+      BuildSurfaceParticleRowAdjusted(
+          particle_idx, particle_spacing, density, A_petsc, b_petsc);
+      continue;
+    }
+
+    // 非自由面粒子：使用LSMPS离散方法
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
       BuildInnerParticleRow(
@@ -109,138 +117,6 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   
   VecAssemblyBegin(b_petsc);
   VecAssemblyEnd(b_petsc);
-  
-  return true;
-}
-
-bool PPEMatrixBuilder::BuildPenaltySystem(
-    Mat A_petsc,
-    Vec b_petsc,
-    const FluidParticle& fluid_particles,
-    double penalty_parameter,
-    Mat& K_petsc,
-    Vec& f_petsc) const {
-  
-  if (A_petsc == NULL || b_petsc == NULL) {
-    std::cerr << "错误：输入矩阵或向量为NULL" << std::endl;
-    return false;
-  }
-  
-  int num_fluid_particles = fluid_particles.particle_num;
-  if (num_fluid_particles == 0) {
-    std::cerr << "错误：流体粒子数为0" << std::endl;
-    return false;
-  }
-  
-  // 确保PETSc已初始化
-  EnsurePetscInitialized();
-  
-  // 初始化输出对象（如果已经存在，先销毁）
-  if (K_petsc != NULL) {
-    MatDestroy(&K_petsc);
-    K_petsc = NULL;
-  }
-  if (f_petsc != NULL) {
-    VecDestroy(&f_petsc);
-    f_petsc = NULL;
-  }
-  
-  // 步骤1：计算 A^T
-  Mat A_transpose = NULL;
-  PetscErrorCode ierr = MatTranspose(A_petsc, MAT_INITIAL_MATRIX, &A_transpose);
-  if (ierr != 0) {
-    std::cerr << "错误：计算 A^T 失败" << std::endl;
-    return false;
-  }
-  
-  // 步骤2：计算 K = A^T A
-  ierr = MatMatMult(A_transpose, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
-  if (ierr != 0) {
-    std::cerr << "错误：计算 A^T A 失败" << std::endl;
-    MatDestroy(&A_transpose);
-    return false;
-  }
-  
-  // 步骤3：构建对角惩罚矩阵 D 并添加到 K
-  // D_{ii} = μ (如果 i 是自由面粒子)，否则 0
-  Vec diagonal_penalty = NULL;
-  ierr = VecCreate(PETSC_COMM_WORLD, &diagonal_penalty);
-  if (ierr != 0) {
-    std::cerr << "错误：创建对角惩罚向量失败" << std::endl;
-    MatDestroy(&A_transpose);
-    MatDestroy(&K_petsc);
-    return false;
-  }
-  
-  ierr = VecSetSizes(diagonal_penalty, PETSC_DECIDE, num_fluid_particles);
-  if (ierr != 0) {
-    std::cerr << "错误：设置对角惩罚向量大小失败" << std::endl;
-    VecDestroy(&diagonal_penalty);
-    MatDestroy(&A_transpose);
-    MatDestroy(&K_petsc);
-    return false;
-  }
-  
-  VecSetType(diagonal_penalty, VECSEQ);
-  VecSetFromOptions(diagonal_penalty);
-  VecSet(diagonal_penalty, 0.0);
-  
-  // 设置自由面粒子的惩罚项
-  std::vector<PetscInt> surface_indices;
-  for (int i = 0; i < num_fluid_particles; ++i) {
-    if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-      surface_indices.push_back(static_cast<PetscInt>(i));
-    }
-  }
-  
-  if (!surface_indices.empty()) {
-    std::vector<PetscScalar> penalty_values(surface_indices.size(), penalty_parameter);
-    VecSetValues(diagonal_penalty, surface_indices.size(), surface_indices.data(), 
-                 penalty_values.data(), INSERT_VALUES);
-    VecAssemblyBegin(diagonal_penalty);
-    VecAssemblyEnd(diagonal_penalty);
-  }
-  
-  // 将惩罚矩阵 D 添加到 K 的对角线上
-  // K = K + D（其中 D 是对角矩阵）
-  MatDiagonalSet(K_petsc, diagonal_penalty, ADD_VALUES);
-  
-  // 组装矩阵
-  MatAssemblyBegin(K_petsc, MAT_FINAL_ASSEMBLY);
-  MatAssemblyEnd(K_petsc, MAT_FINAL_ASSEMBLY);
-  
-  // 标记矩阵为对称正定（K = A^T A + D 是对称正定矩阵）
-  MatSetOption(K_petsc, MAT_SYMMETRIC, PETSC_TRUE);
-  MatSetOption(K_petsc, MAT_SPD, PETSC_TRUE);  // 对称正定
-  
-  // 步骤4：计算 f = A^T b
-  ierr = VecCreate(PETSC_COMM_WORLD, &f_petsc);
-  if (ierr != 0) {
-    std::cerr << "错误：创建右边项向量失败" << std::endl;
-    VecDestroy(&diagonal_penalty);
-    MatDestroy(&A_transpose);
-    MatDestroy(&K_petsc);
-    return false;
-  }
-  
-  ierr = VecSetSizes(f_petsc, PETSC_DECIDE, num_fluid_particles);
-  if (ierr != 0) {
-    std::cerr << "错误：设置右边项向量大小失败" << std::endl;
-    VecDestroy(&f_petsc);
-    VecDestroy(&diagonal_penalty);
-    MatDestroy(&A_transpose);
-    MatDestroy(&K_petsc);
-    return false;
-  }
-  
-  VecSetType(f_petsc, VECSEQ);
-  VecSetFromOptions(f_petsc);
-  
-  MatMultTranspose(A_petsc, b_petsc, f_petsc);
-  
-  // 清理临时对象
-  MatDestroy(&A_transpose);
-  VecDestroy(&diagonal_penalty);
   
   return true;
 }
@@ -368,102 +244,21 @@ void PPEMatrixBuilder::InitializePetscMatrixAndVector(
   }
 }
 
-void PPEMatrixBuilder::BuildSurfaceParticleRow(
+void PPEMatrixBuilder::BuildSurfaceParticleRowAdjusted(
     int particle_idx,
-    const FluidParticle& fluid_particles,
-    const SolidParticle& solid_particles,
-    double smoothing_radius,
+    double particle_spacing,
     double density,
-    double time_step,
-    double reference_density,
-    double lambda,
     Mat& A_petsc,
     Vec& b_petsc) const {
-  
-  const double2& pos_i = fluid_particles.position[particle_idx];
-  const double2& vel_i = fluid_particles.velocity[particle_idx];
   PetscInt row = static_cast<PetscInt>(particle_idx);
-  
-  // 计算系数：4/(n0*lambda*rho)
-  double surface_coeff_factor = 4.0 / (reference_density * lambda * density);
-  
-  // 初始化累加变量
-  // sum_weight 累加所有邻域粒子的权重，实际上就是 n_i*（粒子数密度，考虑壁面粒子）
-  double sum_weight = 0.0;  // sum(w_ij) for all j ≠ i (包括壁面粒子) = n_i*
-  double divergence = 0.0;
-  
-  // 遍历流体邻域粒子 (j ∈ fluid, j ≠ i)
-  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
-    const double2& pos_j = fluid_particles.position[j];
-    const double2& vel_j = fluid_particles.velocity[j];
-    
-    double dx = pos_j.x - pos_i.x;
-    double dy = pos_j.y - pos_i.y;
-    double dist = ComputeDistance(pos_i, pos_j);
-    
-    if (dist < 1e-10 || dist > smoothing_radius) {
-      continue;
-    }
-    
-    double weight = WeightFunction(dist, smoothing_radius);
-    sum_weight += weight;
-    
-    // 非对角线系数：4*w_ij/(n0*lambda*rho)
-    PetscInt col = static_cast<PetscInt>(j);
-    double off_diag_coeff = surface_coeff_factor * weight;
-    MatSetValue(A_petsc, row, col, off_diag_coeff, ADD_VALUES);
-    
-    // 计算速度散度项：2/(n0*dt) * sum[(u_j - u_i)/r_ij · r_ij/r_ij * w_ij]
-    // 根据文档：速度散度计算中 j ≠ i 包括所有邻域粒子
-    double2 vel_diff = {vel_j.x - vel_i.x, vel_j.y - vel_i.y};
-    double r_ij_mag = dist;
-    double2 r_ij_unit = {dx / r_ij_mag, dy / r_ij_mag};
-    double dot_product = vel_diff.x * r_ij_unit.x + vel_diff.y * r_ij_unit.y;
-    divergence += (dot_product / r_ij_mag) * weight;
-  }
-  
-  // 遍历壁面邻域粒子 (j ∈ wall, j ≠ i)
-  // 注意：壁面粒子不参与压力矩阵的非对角线项，但参与速度散度计算和权重累加
-  for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
-    const double2& pos_j = solid_particles.position[j];
-    const double2& vel_wall = solid_particles.velocity[j];
-    
-    double dx = pos_j.x - pos_i.x;
-    double dy = pos_j.y - pos_i.y;
-    double dist = ComputeDistance(pos_i, pos_j);
-    
-    if (dist < 1e-10 || dist > smoothing_radius) {
-      continue;
-    }
-    
-    double weight = WeightFunction(dist, smoothing_radius);
-    sum_weight += weight;  // 壁面粒子也参与权重累加
-    
-    // 计算速度散度项（壁面粒子参与速度散度计算）
-    double2 vel_diff = {vel_wall.x - vel_i.x, vel_wall.y - vel_i.y};
-    double r_ij_mag = dist;
-    double2 r_ij_unit = {dx / r_ij_mag, dy / r_ij_mag};
-    double dot_product = vel_diff.x * r_ij_unit.x + vel_diff.y * r_ij_unit.y;
-    divergence += (dot_product / r_ij_mag) * weight;
-  }
-  
-  // 循环结束后，sum_weight 就是 n_i*（粒子数密度，考虑壁面粒子）
-  double n_i_star = sum_weight;
-  
-  // 根据文档：n_i' = min(n_i*, n_0)
-  double n_i_prime = std::min(n_i_star, reference_density);
-  
-  // 根据文档第36行：对角线系数 = -4/(n0*lambda*rho) * (sum(w_ij) + (n_0 - n_i'))
-  // 其中 sum(w_ij) 包括所有 j ≠ i 的权重（流体+壁面）
-  double diag_coeff = -surface_coeff_factor * (sum_weight + (reference_density - n_i_prime));
-  // double diag_coeff = -surface_coeff_factor * (sum_weight);
-  
-  MatSetValue(A_petsc, row, row, diag_coeff, ADD_VALUES);
-  
-  // 右边项：2/(n0*dt) * sum[...]
-  // 根据文档：速度散度计算中 j ≠ i 包括所有邻域粒子（流体+壁面）
-  double b_value = (2.0 / (reference_density * time_step)) * divergence;
-  VecSetValue(b_petsc, row, b_value, INSERT_VALUES);
+
+  // 参考 `PPEadjust.md`：自由面粒子施加 p_i = 0
+  // 取 c 接近内部粒子对角线尺度：c = 1 / (Δx^2 ρ)
+  const double dx = (particle_spacing > 0.0) ? particle_spacing : 1e-12;
+  const double c = 1.0 / (dx * dx * density);
+
+  MatSetValue(A_petsc, row, row, c, INSERT_VALUES);
+  VecSetValue(b_petsc, row, 0.0, INSERT_VALUES);
 }
 
 void PPEMatrixBuilder::BuildInnerParticleRow(
@@ -491,13 +286,13 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2_velocity = corrective_matrix_velocity.row(1);
   
   // 提取压力corrective matrix的行向量（用于压力拉普拉斯算子计算，第二类边界条件）
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_pressure = corrective_matrix_pressure.row(2);
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4_pressure = corrective_matrix_pressure.row(3);
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4_pressure = C3_pressure + C4_pressure;
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_pressure = corrective_matrix_pressure.row(2);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M3_pressure = corrective_matrix_pressure.row(3);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_plus_M3_pressure = M2_pressure + M3_pressure;
   
   // 初始化累加变量
   double diag_sum = 0.0;
-  double divergence = 0.0;
+  double divergence_sum = 0.0;
   double wall_pressure_term = 0.0;
   
   // 遍历流体邻域粒子
@@ -515,12 +310,13 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
     
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数
+    // 计算基函数 P_ij
     Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
         corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
     
-    // 计算公共项（使用压力corrective matrix，第二类边界条件）
-    double common_coeff = (weight / dist) * (C3_plus_C4_pressure * basis)(0, 0);
+    // 压力拉普拉斯公共项（仅使用基函数和 moment 矩阵逆）
+    // 对应文档中的 [M_{i,2} + M_{i,3}] P_ij
+    double common_coeff = weight * (M2_plus_M3_pressure * basis)(0, 0);
     
     // 累加对角线系数（负号）
     diag_sum += common_coeff;
@@ -531,11 +327,12 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
     MatSetValue(A_petsc, row, col, off_diag_coeff, ADD_VALUES);
     
     // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
-    double dux_dr = (vel_j.x - vel_i.x) / dist;
-    double duy_dr = (vel_j.y - vel_i.y) / dist;
+    double dvx = vel_j.x - vel_i.x;
+    double dvy = vel_j.y - vel_i.y;
     double C1P = (C1_velocity * basis)(0, 0);
     double C2P = (C2_velocity * basis)(0, 0);
-    divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+    // 根据文档：∇·u 使用 1/r_s 系数，而差分项为 (u_j - u_i)
+    divergence_sum += weight * (C1P * dvx + C2P * dvy);
   }
   
   // 处理壁面邻域粒子
@@ -564,15 +361,17 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
             dx, dy, normal.x, normal.y, smoothing_radius);
     
     // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
-    double dux_dr = (vel_wall.x - vel_i.x) / dist;
-    double duy_dr = (vel_wall.y - vel_i.y) / dist;
+    double dvx = vel_wall.x - vel_i.x;
+    double dvy = vel_wall.y - vel_i.y;
     double C1P = (C1_velocity * basis_velocity)(0, 0);
     double C2P = (C2_velocity * basis_velocity)(0, 0);
-    divergence += weight * (C1P * dux_dr + C2P * duy_dr);
+    divergence_sum += weight * (C1P * dvx + C2P * dvy);
     
     // 计算壁面压力边界条件项（使用压力corrective matrix，第二类边界条件）
     double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;
-    double wall_pressure_coeff = -weight * (density * n_dot_g) * (C3_plus_C4_pressure * basis_pressure)(0, 0);
+    // 根据文档：壁面项中包含 r_s ρ g n
+    double wall_pressure_coeff = -weight * smoothing_radius * density * n_dot_g *
+        (M2_plus_M3_pressure * basis_pressure)(0, 0);
     wall_pressure_term += wall_pressure_coeff;
   }
   
@@ -581,7 +380,9 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   MatSetValue(A_petsc, row, row, diag_coeff, ADD_VALUES);
   
   // 设置右边项
-  double b_value = (1.0 / time_step) * divergence + coeff_factor * wall_pressure_term;
+  // 速度散度项前的系数 1 / (r_s * Δt)
+  double b_value = (1.0 / (smoothing_radius * time_step)) * divergence_sum +
+      coeff_factor * wall_pressure_term;
   VecSetValue(b_petsc, row, b_value, INSERT_VALUES);
 }
 

@@ -9,7 +9,7 @@ double2 Correction::ComputePressureGradient(
     int particle_idx,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
-    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix,
+    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& moment_matrix_inverse,
     double smoothing_radius,
     double gravity_x,
     double gravity_y,
@@ -19,11 +19,12 @@ double2 Correction::ComputePressureGradient(
   double p_i = fluid_particles.pressure[particle_idx];
   
   // 提取压力corrective matrix的前两行（用于梯度计算，第二类边界条件）
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1 = corrective_matrix.row(0);  // x方向
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2 = corrective_matrix.row(1);  // y方向
+  // 文档中对应 [M_{i,0}, M_{i,1}]
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M0 = moment_matrix_inverse.row(0);  // x 方向
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M1 = moment_matrix_inverse.row(1);  // y 方向
   
-  double grad_x = 0.0;
-  double grad_y = 0.0;
+  double sum_x = 0.0;
+  double sum_y = 0.0;
   
   CorrectiveMatrix corrective_matrix_calc;
   
@@ -39,17 +40,21 @@ double2 Correction::ComputePressureGradient(
     if (dist < 1e-10 || dist > smoothing_radius) {
       continue;
     }
-    
-    double d_ij = (p_j - p_i) / dist;
+
+    double dp = p_j - p_i;
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数（标准基函数）
+    // 计算基函数（标准基函数 P_ij）
     Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
         corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
     
     // 计算梯度贡献
-    grad_x += weight * d_ij * (C1 * basis)(0, 0);
-    grad_y += weight * d_ij * (C2 * basis)(0, 0);
+    // 根据文档：∇φ_i = (1/r_s) Σ_j w_ij (φ_j - φ_i)
+    //           [M_{i,0}; M_{i,1}] P_ij
+    double M0P = (M0 * basis)(0, 0);
+    double M1P = (M1 * basis)(0, 0);
+    sum_x += weight * dp * M0P;
+    sum_y += weight * dp * M1P;
   }
   
   // 处理壁面邻域粒子（第二类边界条件）
@@ -65,7 +70,7 @@ double2 Correction::ComputePressureGradient(
     if (dist < 1e-10 || dist > smoothing_radius) {
       continue;
     }
-    
+
     double weight = WeightFunction(dist, smoothing_radius);
     
     // 使用壁面基函数（第二类边界条件）
@@ -86,10 +91,18 @@ double2 Correction::ComputePressureGradient(
     double dp_dn = density * (n_x * gravity_x + n_y * gravity_y);
     
     // 计算梯度贡献
-    grad_x += weight * dp_dn * (C1 * basis_wall)(0, 0);
-    grad_y += weight * dp_dn * (C2 * basis_wall)(0, 0);
+    // 文档中的壁面项：1/r_s Σ_{wall} w_ij r_s ρ g n [M_{i,0}; M_{i,1}] Q_ij
+    double M0Q = (M0 * basis_wall)(0, 0);
+    double M1Q = (M1 * basis_wall)(0, 0);
+    sum_x += weight * smoothing_radius * dp_dn * M0Q;
+    sum_y += weight * smoothing_radius * dp_dn * M1Q;
   }
-  
+
+  // 统一乘以 1 / r_s
+  double inv_rs = 1.0 / smoothing_radius;
+  double grad_x = inv_rs * sum_x;
+  double grad_y = inv_rs * sum_y;
+
   return {grad_x, grad_y};
 }
 

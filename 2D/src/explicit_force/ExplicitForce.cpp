@@ -8,21 +8,28 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     const std::vector<double2>& velocity_field,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
-    const Eigen::Matrix<double, 5, 5>& corrective_matrix,
+    const Eigen::Matrix<double, 5, 5>& moment_matrix_inverse,
     double smoothing_radius) {
   
   const double2& pos_i = fluid_particles.position[particle_idx];
   const double2& v_i = velocity_field[particle_idx];
   
-  // 提取corrective matrix的第3行和第4行（用于拉普拉斯算子计算）
-  Eigen::Matrix<double, 1, 5> C3 = corrective_matrix.row(2);  // x²项
-  Eigen::Matrix<double, 1, 5> C4 = corrective_matrix.row(3);  // y²项
+  // 提取 moment matrix 逆矩阵的第3行和第4行（用于拉普拉斯算子计算）
+  // 文档中对应 [M_{i,2} + M_{i,3}]
+  Eigen::RowVector<double, 5> M2 = moment_matrix_inverse.row(2);  // x² 项
+  Eigen::RowVector<double, 5> M3 = moment_matrix_inverse.row(3);  // y² 项
+  Eigen::RowVector<double, 5> M2_plus_M3 = M2 + M3;
   
   double laplacian_x = 0.0;
   double laplacian_y = 0.0;
   
-  // 标量因子：2.0 / smoothing_radius
-  const double scalar_factor = 2.0 / smoothing_radius;
+  // 标量因子：2 / r_s^2
+  // 其中 r_s 为平滑距离（与文档中的 r_s 一致）
+  const double scalar_factor = 2.0 / (smoothing_radius * smoothing_radius);
+
+  // 使用与 LSMPS moment 矩阵相同的基函数定义
+  // P_ij = [x/r_s, y/r_s, x^2/r_s^2, y^2/r_s^2, x y / r_s^2]
+  CorrectiveMatrix corrective_matrix_calc;
   
   // 处理流体邻域粒子
   for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
@@ -37,33 +44,18 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     const double2& v_j = velocity_field[j];
     double dv_x = v_j.x - v_i.x;
     double dv_y = v_j.y - v_i.y;
-    double d_ij_x = dv_x / dist;  // (v_x_j - v_x_i) / r_ij
-    double d_ij_y = dv_y / dist;  // (v_y_j - v_y_i) / r_ij
     double weight = WeightFunction(dist, smoothing_radius);
-    
-    // 计算基函数
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x²/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y²/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
-    
-    // 计算拉普拉斯算子贡献
-    double C3P = (C3 * P)(0, 0);
-    double C4P = (C4 * P)(0, 0);
-    
-    // ∇²v_x = ∂²v_x/∂x² + ∂²v_x/∂y²
-    double contrib_x_C3 = scalar_factor * weight * d_ij_x * C3P;  // ∂²v_x/∂x²
-    double contrib_x_C4 = scalar_factor * weight * d_ij_x * C4P;  // ∂²v_x/∂y²
-    laplacian_x += contrib_x_C3;
-    laplacian_x += contrib_x_C4;
-    
-    // ∇²v_y = ∂²v_y/∂x² + ∂²v_y/∂y²
-    double contrib_y_C3 = scalar_factor * weight * d_ij_y * C3P;  // ∂²v_y/∂x²
-    double contrib_y_C4 = scalar_factor * weight * d_ij_y * C4P;  // ∂²v_y/∂y²
-    laplacian_y += contrib_y_C3;
-    laplacian_y += contrib_y_C4;
+
+    // 计算基函数 P_ij
+    Eigen::Vector<double, 5> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+
+    // 根据文档：∇²φ_i = (2/r_s^2) Σ_j w_ij (φ_j - φ_i) [M_{i,2} + M_{i,3}] P_ij
+    double M2M3P = (M2_plus_M3 * basis)(0, 0);
+    double coeff = scalar_factor * weight * M2M3P;
+
+    laplacian_x += coeff * dv_x;
+    laplacian_y += coeff * dv_y;
   }
   
   // 处理固体邻域粒子（壁面粒子）
@@ -76,36 +68,23 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
     
     // 跳过距离过小或过大的粒子
     if (dist < 1e-10 || dist > smoothing_radius) continue;
+
     // 第一类边界条件：无滑移边界，壁面速度为零
     const double2 v_wall = {0.0, 0.0};
-    
     double dv_x = v_wall.x - v_i.x;
     double dv_y = v_wall.y - v_i.y;
-    double d_ij_x = dv_x / dist;
-    double d_ij_y = dv_y / dist;
+
     double weight = WeightFunction(dist, smoothing_radius);
-    
-    // 使用标准基函数（与流体粒子相同）
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x²/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y²/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
-    
-    // 计算拉普拉斯算子贡献
-    double C3P = (C3 * P)(0, 0);
-    double C4P = (C4 * P)(0, 0);
-    
-    double contrib_x_C3 = scalar_factor * weight * d_ij_x * C3P;
-    double contrib_x_C4 = scalar_factor * weight * d_ij_x * C4P;
-    double contrib_y_C3 = scalar_factor * weight * d_ij_y * C3P;
-    double contrib_y_C4 = scalar_factor * weight * d_ij_y * C4P;
-    
-    laplacian_x += contrib_x_C3;
-    laplacian_x += contrib_x_C4;
-    laplacian_y += contrib_y_C3;
-    laplacian_y += contrib_y_C4;
+
+    // 使用与流体粒子相同的基函数 P_ij
+    Eigen::Vector<double, 5> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+
+    double M2M3P = (M2_plus_M3 * basis)(0, 0);
+    double coeff = scalar_factor * weight * M2M3P;
+
+    laplacian_x += coeff * dv_x;
+    laplacian_y += coeff * dv_y;
   }
   
   return {laplacian_x, laplacian_y};

@@ -39,11 +39,19 @@ double2 ComputeGradient(
   double phi_i = scalar_field[particle_idx];
   
   // 提取corrective matrix的前两行（C1和C2）
-  Eigen::Matrix<double, 1, 5> C1 = corrective_matrix.row(0);  // x方向
-  Eigen::Matrix<double, 1, 5> C2 = corrective_matrix.row(1);    // y方向
+  // 文档中对应 [M_{i,0}, M_{i,1}]
+  Eigen::RowVector<double, 5> M0 = corrective_matrix.row(0);  // x方向
+  Eigen::RowVector<double, 5> M1 = corrective_matrix.row(1);  // y方向
   
-  double grad_x = 0.0;
-  double grad_y = 0.0;
+  double sum_x = 0.0;
+  double sum_y = 0.0;
+
+  // gravity 向量（y 方向向下）
+  const double gravity_x = 0.0;
+  const double gravity_y = -g;
+
+  // 统一使用LSMPS基函数
+  CorrectiveMatrix corrective_matrix_calc;
   
   // 处理流体邻域粒子
   for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
@@ -55,20 +63,18 @@ double2 ComputeGradient(
     if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
     
     double phi_j = scalar_field[j];
-    double d_ij = (phi_j - phi_i) / dist;  // d_ij = (phi_j - phi_i) / r_ij
+    double dphi = phi_j - phi_i;  // 直接使用差分，不除以dist
     double weight = WeightFunction(dist, smoothing_radius);
     
-    // 计算基函数（与 manual 测试保持一致）
-    Eigen::Matrix<double, 5, 1> P;
-    P << dx / dist,                                    // x/r
-         dy / dist,                                    // y/r
-         dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-         dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-         dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
-    
-    // 计算梯度贡献
-    grad_x += weight * d_ij * (C1 * P)(0, 0);
-    grad_y += weight * d_ij * (C2 * P)(0, 0);
+    // P_ij
+    Eigen::Vector<double, 5> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+
+    // 文档：∇φ = (1/r_e) Σ_{fluid} w_ij (φ_j - φ_i) [M_{i,0}; M_{i,1}] P_ij
+    double M0P = (M0 * basis)(0, 0);
+    double M1P = (M1 * basis)(0, 0);
+    sum_x += weight * dphi * M0P;
+    sum_y += weight * dphi * M1P;
   }
   
   // 处理固体邻域粒子（壁面粒子）
@@ -80,28 +86,33 @@ double2 ComputeGradient(
     
     if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
     
-    // 获取壁面法向量并归一化
+    double weight = WeightFunction(dist, smoothing_radius);
+
+    // 获取壁面法向量并归一化（文档中的 n）
     const double2& normal = solid_particles.normal_vector[j];
     double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
-    double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
-    
-    double d_ij = -rho * g * n_y;
-    double weight = WeightFunction(dist, smoothing_radius);
-    
-    // 壁面基函数
-    Eigen::Matrix<double, 5, 1> P;
-    P << normal.x,                                    // n_x
-         normal.y,                                    // n_y
-         2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
-         2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
-         (normal.y * dx + normal.x * dy) / smoothing_radius;  // (n_x*x + n_y*y)/r_e
-    
-    // 计算梯度贡献
-    grad_x += weight * d_ij * (C1 * P)(0, 0);
-    grad_y += weight * d_ij * (C2 * P)(0, 0);
+    if (nn < 1e-10) continue;
+    double n_x = normal.x / nn;
+    double n_y = normal.y / nn;
+
+    // dp/dn = ρ (n · g_vec)
+    double dp_dn = rho * (n_x * gravity_x + n_y * gravity_y);
+
+    // Q_ij
+    Eigen::Vector<double, 5> basis_wall =
+        corrective_matrix_calc.ComputeBasisFunctionsForWall(
+            dx, dy, n_x, n_y, smoothing_radius);
+
+    // 文档：+ (1/r_e) Σ_{wall} w_ij (r_e ρ g n) [M_{i,0};M_{i,1}] Q_ij
+    double M0Q = (M0 * basis_wall)(0, 0);
+    double M1Q = (M1 * basis_wall)(0, 0);
+    sum_x += weight * smoothing_radius * dp_dn * M0Q;
+    sum_y += weight * smoothing_radius * dp_dn * M1Q;
   }
-  
-  return {grad_x, grad_y};
+
+  // 统一乘以 1 / r_e
+  double inv_re = 1.0 / smoothing_radius;
+  return {inv_re * sum_x, inv_re * sum_y};
 }
 
 // 计算PPE系数矩阵的对角线元素
@@ -126,12 +137,14 @@ double ComputeDiagonalCoefficient(
   const double2& pos_i = fluid_particles.position[particle_idx];
   
   // 提取corrective matrix的行向量
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3 = corrective_matrix.row(2);
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C4 = corrective_matrix.row(3);
-  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C3_plus_C4 = C3 + C4;
+  // 文档中对应 [M_{i,2} + M_{i,3}]
+  Eigen::RowVector<double, 5> M2 = corrective_matrix.row(2);
+  Eigen::RowVector<double, 5> M3 = corrective_matrix.row(3);
+  Eigen::RowVector<double, 5> M2_plus_M3 = M2 + M3;
   
   // 系数因子
-  double coeff_factor = 2.0 / (smoothing_radius * density);
+  // 与 PPEMatrixBuilder 中一致：2 / (r_e^2 * ρ)
+  double coeff_factor = 2.0 / (smoothing_radius * smoothing_radius * density);
   
   // 创建CorrectiveMatrix实例用于计算基函数
   CorrectiveMatrix corrective_matrix_calc;
@@ -157,8 +170,8 @@ double ComputeDiagonalCoefficient(
     Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis = 
         corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
     
-    // 计算公共项：(w_ij / r_ij) * [C_3 + C_4] * P_ij
-    double common_coeff = (weight / dist) * (C3_plus_C4 * basis)(0, 0);
+    // 与 PPEMatrixBuilder 中一致：w_ij * [M_{i,2}+M_{i,3}] * P_ij
+    double common_coeff = weight * (M2_plus_M3 * basis)(0, 0);
     
     // 累加对角线系数
     diag_sum += common_coeff;
@@ -195,11 +208,21 @@ double ComputePressureLaplacian(
 const double2& pos_i = fluid_particles.position[particle_idx];
 double phi_i = scalar_field[particle_idx];
 
-// 提取corrective matrix的前两行（C1和C2）
-Eigen::Matrix<double, 1, 5> C3 = corrective_matrix.row(2);  // x方向
-Eigen::Matrix<double, 1, 5> C4 = corrective_matrix.row(3);  // y方向
+// 提取 [M_{i,2} + M_{i,3}]
+Eigen::RowVector<double, 5> M2 = corrective_matrix.row(2);
+Eigen::RowVector<double, 5> M3 = corrective_matrix.row(3);
+Eigen::RowVector<double, 5> M2_plus_M3 = M2 + M3;
 
 double pressure_laplacian = 0.0;
+
+// 系数 2 / r_e^2
+const double scalar_factor = 2.0 / (smoothing_radius * smoothing_radius);
+
+// gravity 向量（y 方向向下）
+const double gravity_x = 0.0;
+const double gravity_y = -g;
+
+CorrectiveMatrix corrective_matrix_calc;
 
 // 处理流体邻域粒子
 for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
@@ -211,20 +234,16 @@ for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
   if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
   
   double phi_j = scalar_field[j];
-  double d_ij = (phi_j - phi_i) / dist;  // d_ij = (phi_j - phi_i) / r_ij
+  double dphi = phi_j - phi_i;
   double weight = WeightFunction(dist, smoothing_radius);
   
-  // 计算基函数（与 manual 测试保持一致）
-  Eigen::Matrix<double, 5, 1> P;
-  P << dx / dist,                                    // x/r
-       dy / dist,                                    // y/r
-       dx * dx / (dist * smoothing_radius),          // x^2/(r*r_e)
-       dy * dy / (dist * smoothing_radius),          // y^2/(r*r_e)
-       dx * dy / (dist * smoothing_radius);          // x*y/(r*r_e)
-  
-  // 计算拉普拉斯算子贡献 
-  pressure_laplacian += weight * d_ij * (C3 * P)(0, 0);
-  pressure_laplacian += weight * d_ij * (C4 * P)(0, 0);
+  // P_ij
+  Eigen::Vector<double, 5> basis =
+      corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+
+  // 文档：∇²φ = (2/r_e^2) Σ_{fluid} w_ij (φ_j - φ_i) [M_{i,2}+M_{i,3}] P_ij
+  double M2M3P = (M2_plus_M3 * basis)(0, 0);
+  pressure_laplacian += scalar_factor * weight * dphi * M2M3P;
 }
 
 // 处理固体邻域粒子（壁面粒子）
@@ -236,25 +255,25 @@ for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
   
   if (dist < 1e-10 || dist > smoothing_radius) continue;  // 避免除零
   
-  // 获取壁面法向量并归一化
+  double weight = WeightFunction(dist, smoothing_radius);
+
+  // 获取壁面法向量并归一化（文档中的 n）
   const double2& normal = solid_particles.normal_vector[j];
   double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
-  double n_y = (nn > 1e-10) ? normal.y / nn : 0.0;
-  
-  double d_ij = -rho * g * n_y;
-  double weight = WeightFunction(dist, smoothing_radius);
-  
-  // 壁面基函数
-  Eigen::Matrix<double, 5, 1> P;
-  P << normal.x,                                    // n_x
-       normal.y,                                    // n_y
-       2.0 * normal.x * dx / smoothing_radius,      // 2*n_x*x/r_e
-       2.0 * normal.y * dy / smoothing_radius,      // 2*n_y*y/r_e
-       (normal.y * dx + normal.x * dy) / smoothing_radius;  // (n_x*x + n_y*y)/r_e
-  
-  // 计算梯度贡献
-  pressure_laplacian += weight * d_ij * (C3 * P)(0, 0);
-  pressure_laplacian += weight * d_ij * (C4 * P)(0, 0);
+  if (nn < 1e-10) continue;
+  double n_x = normal.x / nn;
+  double n_y = normal.y / nn;
+
+  double dp_dn = rho * (n_x * gravity_x + n_y * gravity_y);
+
+  // Q_ij
+  Eigen::Vector<double, 5> basis_wall =
+      corrective_matrix_calc.ComputeBasisFunctionsForWall(
+          dx, dy, n_x, n_y, smoothing_radius);
+
+  // 文档：+ (2/r_e^2) Σ_{wall} w_ij (r_e ρ g n) [M_{i,2}+M_{i,3}] Q_ij
+  double M2M3Q = (M2_plus_M3 * basis_wall)(0, 0);
+  pressure_laplacian += scalar_factor * weight * smoothing_radius * dp_dn * M2M3Q;
 }
 
 return pressure_laplacian;

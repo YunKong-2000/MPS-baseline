@@ -332,18 +332,15 @@ int main(int argc, char* argv[]) {
     Correction correction;
     
     // PPE求解器配置
-    // 注意：使用罚函数方法求解 K·p = f，其中 K = A^T A + D，f = A^T b（对称正定系统）
+    // 直接求解 Ap = b（自由面粒子采用行修改法施加 p_i = 0）
     PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::CG;  // 使用CG方法（因为K是对称正定的）
+    solver_config.solver_type = PPESolver::SolverType::BICGSTAB;  // 推荐用于非对称矩阵
     solver_config.max_iterations = 10000;  // 最大迭代次数
     solver_config.tolerance = 1e-6;  // 容差
     solver_config.force_iterative = true;  // 强制使用迭代求解器
-    solver_config.is_symmetric_positive_definite = true;  // 罚函数系统 K·p = f 是对称正定的
-    solver_config.restart = 0;  // CG不需要restart参数
+    solver_config.is_symmetric_positive_definite = false;
+    solver_config.restart = 30;  // GMRES重启参数（仅GMRES有效）
     ppe_solver.SetConfig(solver_config);
-    
-    // 罚函数参数
-    const double penalty_parameter = 1000;  // 罚函数参数μ
     
     // ========== 模拟循环 ==========
     std::cout << "\n========== 开始模拟循环 ==========" << std::endl;
@@ -686,59 +683,17 @@ int main(int argc, char* argv[]) {
           throw;
         }
         
-        // 步骤6.5：构建罚函数系统 K = A^T A + D，f = A^T b
+        // 步骤7：求解PPE（直接求解 Ap = b）
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤6.5/8] 构建罚函数系统（K = A^T A + D，f = A^T b）..." << std::flush;
-        }
-        Mat K_petsc = NULL;
-        Vec f_petsc = NULL;
-        
-        try {
-          bool penalty_build_success = ppe_matrix_builder.BuildPenaltySystem(
-              A_petsc, b_petsc, fluid_particles, penalty_parameter,
-              K_petsc, f_petsc);
-          
-          if (!penalty_build_success) {
-            std::cerr << "\n错误：构建罚函数系统失败（时间步 " << iteration << "）" << std::endl;
-            flush_log();
-            if (A_petsc != NULL) MatDestroy(&A_petsc);
-            if (b_petsc != NULL) VecDestroy(&b_petsc);
-            if (K_petsc != NULL) MatDestroy(&K_petsc);
-            if (f_petsc != NULL) VecDestroy(&f_petsc);
-            throw std::runtime_error("罚函数系统构建失败");
-          }
-          if (should_output_detail) {
-            auto step_end = std::chrono::steady_clock::now();
-            auto step_duration = std::chrono::duration_cast<std::chrono::milliseconds>(step_end - step_start).count();
-            std::cout << " 完成 (" << step_duration << " ms)" << std::endl;
-            flush_log();
-          }
-        } catch (const std::exception& e) {
-          std::cerr << "\n错误：构建罚函数系统时发生异常 - " << e.what() << std::endl;
-          flush_log();
-          if (A_petsc != NULL) MatDestroy(&A_petsc);
-          if (b_petsc != NULL) VecDestroy(&b_petsc);
-          if (K_petsc != NULL) MatDestroy(&K_petsc);
-          if (f_petsc != NULL) VecDestroy(&f_petsc);
-          throw;
-        }
-        
-        // 步骤7：求解PPE（使用罚函数方法求解 K·p = f）
-        step_start = std::chrono::steady_clock::now();
-        if (should_output_detail) {
-          std::cout << "  [步骤7/8] 求解PPE（罚函数方法，CG求解器，系统 K·p = f）..." << std::flush;
+          std::cout << "  [步骤7/8] 求解PPE（直接求解 Ap = b，BiCGSTAB求解器）..." << std::flush;
         }
         Vec p_petsc = NULL;
         bool solve_success = false;
         
         try {
-          // 使用罚函数系统 K·p = f 进行求解
-          solve_success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc);
+          solve_success = ppe_solver.Solve(A_petsc, b_petsc, p_petsc);
           
-          // 在求解失败分支中，在销毁K_petsc之前提取对角线数据（如果K_petsc仍然存在）
-          // 注意：这些变量需要在循环作用域内定义，以便在输出时使用
-          // 我们将在后面统一提取，这里先标记求解状态
           if (!solve_success) {
             std::cerr << "\n警告：PPE求解未收敛（时间步 " << iteration 
                       << ", 迭代次数: " << ppe_solver.GetLastIterations() 
@@ -749,12 +704,8 @@ int main(int argc, char* argv[]) {
               VecDestroy(&p_petsc);
               p_petsc = NULL;
             }
-            // 注意：K_petsc在清理之前仍然存在，我们将在后面统一提取对角线数据
-            // 清理其他PETSc对象
             if (A_petsc != NULL) MatDestroy(&A_petsc);
             if (b_petsc != NULL) VecDestroy(&b_petsc);
-            if (K_petsc != NULL) MatDestroy(&K_petsc);
-            if (f_petsc != NULL) VecDestroy(&f_petsc);
             // 继续执行，不退出（允许程序继续运行）
           } else {
             if (should_output_detail) {
@@ -773,8 +724,6 @@ int main(int argc, char* argv[]) {
           if (p_petsc != NULL) VecDestroy(&p_petsc);
           if (A_petsc != NULL) MatDestroy(&A_petsc);
           if (b_petsc != NULL) VecDestroy(&b_petsc);
-          if (K_petsc != NULL) MatDestroy(&K_petsc);
-          if (f_petsc != NULL) VecDestroy(&f_petsc);
           throw;
         }
         
@@ -791,34 +740,19 @@ int main(int argc, char* argv[]) {
           // 这里可以选择跳过压力修正步骤
         }
         
-        // ========== 提取 A^T A 和 K 矩阵的对角线系数（用于输出到VTK）==========
-        // 注意：即使求解失败，只要K_petsc仍然存在，我们也可以提取数据
-        std::vector<double> K_diagonal(num_fluid, 0.0);
-        std::vector<double> ATA_diagonal(num_fluid, 0.0);
+        // ========== 提取 A 矩阵的对角线系数（用于输出到VTK）==========
+        std::vector<double> A_diagonal(num_fluid, 0.0);
         
-        if (K_petsc != NULL) {
-          // 提取 K 矩阵的对角线
+        if (A_petsc != NULL) {
+          // 提取 A 矩阵的对角线
           for (int i = 0; i < num_fluid; ++i) {
             PetscInt row = static_cast<PetscInt>(i);
             PetscInt col = static_cast<PetscInt>(i);
             PetscScalar diag_val;
-            PetscErrorCode ierr = MatGetValue(K_petsc, row, col, &diag_val);
+            PetscErrorCode ierr = MatGetValue(A_petsc, row, col, &diag_val);
             if (ierr == 0) {
-              K_diagonal[i] = static_cast<double>(diag_val);
+              A_diagonal[i] = static_cast<double>(diag_val);
             }
-          }
-          
-          // 计算 D 的对角线（自由面粒子的惩罚项）
-          std::vector<double> D_diagonal(num_fluid, 0.0);
-          for (int i = 0; i < num_fluid; ++i) {
-            if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
-              D_diagonal[i] = penalty_parameter;
-            }
-          }
-          
-          // 计算 A^T A 的对角线 = K 的对角线 - D 的对角线
-          for (int i = 0; i < num_fluid; ++i) {
-            ATA_diagonal[i] = K_diagonal[i] - D_diagonal[i];
           }
         }
         
@@ -860,14 +794,6 @@ int main(int argc, char* argv[]) {
         if (p_petsc != NULL) {
           VecDestroy(&p_petsc);
           p_petsc = NULL;
-        }
-        if (f_petsc != NULL) {
-          VecDestroy(&f_petsc);
-          f_petsc = NULL;
-        }
-        if (K_petsc != NULL) {
-          MatDestroy(&K_petsc);
-          K_petsc = NULL;
         }
         if (b_petsc != NULL) {
           VecDestroy(&b_petsc);
@@ -928,19 +854,11 @@ int main(int argc, char* argv[]) {
               // 追加粘性力向量（vector格式）- 使用explicit_force模块计算出的粘性力加速度
               file_operator.appendVTKVector(output_file, "viscous_force", viscous_acceleration);
               
-              // 追加 K 矩阵的对角线系数
-              if (file_operator.appendVTKScalar(output_file, "K_diagonal", K_diagonal)) {
+              // 追加原始 PPE 矩阵 A 的对角线系数
+              if (file_operator.appendVTKScalar(output_file, "A_diagonal", A_diagonal)) {
                 // 成功追加
               } else {
-                std::cerr << "\n警告：无法追加 K 对角线系数到VTK文件" << std::endl;
-                flush_log();
-              }
-              
-              // 追加 A^T A 矩阵的对角线系数
-              if (file_operator.appendVTKScalar(output_file, "ATA_diagonal", ATA_diagonal)) {
-                // 成功追加
-              } else {
-                std::cerr << "\n警告：无法追加 A^T A 对角线系数到VTK文件" << std::endl;
+                std::cerr << "\n警告：无法追加 A 对角线系数到VTK文件" << std::endl;
                 flush_log();
               }
               
