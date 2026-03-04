@@ -10,18 +10,14 @@
 
 namespace mps2D {
 
-// 静态标志，确保PETSc只初始化一次
-static bool petsc_initialized = false;
-
 PPESolver::PPESolver(const SolverConfig& config) : config_(config) {
-  // 初始化PETSc（只初始化一次）
-  if (!petsc_initialized) {
-    int argc = 0;
-    char** argv = nullptr;
-    PetscInitialize(&argc, &argv, nullptr, nullptr);
-    petsc_initialized = true;
-    
-    // 设置PETSc选项：不显示版权信息
+  // 检查PETSc是否已经在程序入口处初始化
+  PetscBool petsc_is_initialized = PETSC_FALSE;
+  PetscInitialized(&petsc_is_initialized);
+  if (!petsc_is_initialized) {
+    std::cerr << "错误：PETSc尚未初始化，请在程序入口调用PetscInitialize。" << std::endl;
+  } else {
+    // 隐藏PETSc多余的选项输出（可多次调用，无副作用）
     PetscOptionsSetValue(nullptr, "-options_left", "false");
   }
 }

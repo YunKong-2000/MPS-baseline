@@ -14,30 +14,15 @@
 
 namespace mps2D {
 
-// 静态标志，确保PETSc只初始化一次
-static bool petsc_initialized_in_builder = false;
-
-// 确保PETSc已初始化（用于BuildPPEMatrixPetsc）
-static void EnsurePetscInitialized() {
-  if (!petsc_initialized_in_builder) {
-    // 检查PETSc是否已经初始化
-    PetscBool initialized = PETSC_FALSE;
-    PetscInitialized(&initialized);
-    
-    if (!initialized) {
-      int argc = 0;
-      char** argv = nullptr;
-      PetscErrorCode ierr = PetscInitialize(&argc, &argv, nullptr, nullptr);
-      if (ierr) {
-        std::cerr << "错误：PETSc初始化失败" << std::endl;
-        return;
-      }
-      
-      // 设置PETSc选项：不显示版权信息
-      PetscOptionsSetValue(nullptr, "-options_left", "false");
-    }
-    petsc_initialized_in_builder = true;
+// 确保PETSc已在程序入口处初始化（用于BuildPPEMatrixPetsc）
+static bool EnsurePetscInitialized() {
+  PetscBool initialized = PETSC_FALSE;
+  PetscInitialized(&initialized);
+  if (!initialized) {
+    std::cerr << "错误：PETSc尚未初始化，请在程序入口调用PetscInitialize。" << std::endl;
+    return false;
   }
+  return true;
 }
 
 bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
@@ -52,10 +37,13 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     double gravity_x,
     double gravity_y,
     Mat& A_petsc,
-    Vec& b_petsc) {
+    Vec& b_petsc,
+    std::vector<double>* velocity_divergence_out) {
   
-  // 确保PETSc已初始化
-  EnsurePetscInitialized();
+  // 确保PETSc已在程序入口处初始化
+  if (!EnsurePetscInitialized()) {
+    return false;
+  }
   
   int num_fluid_particles = fluid_particles.particle_num;
   
@@ -72,6 +60,11 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   if (static_cast<int>(corrective_matrices_pressure.size()) != num_fluid_particles) {
     std::cerr << "错误：压力corrective matrix数量与流体粒子数不匹配" << std::endl;
     return false;
+  }
+  
+  // 如果需要调试输出速度散度，则初始化输出向量
+  if (velocity_divergence_out != nullptr) {
+    velocity_divergence_out->assign(num_fluid_particles, 0.0);
   }
   
   // 统计每行的非零元素数
@@ -103,12 +96,17 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     // 非自由面粒子：使用LSMPS离散方法
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
-      BuildInnerParticleRow(
-        particle_idx, fluid_particles, solid_particles, 
+    double divergence_value = 0.0;
+    BuildInnerParticleRow(
+        particle_idx, fluid_particles, solid_particles,
         corrective_matrices_velocity[particle_idx],
         corrective_matrices_pressure[particle_idx],
-          corrective_matrix_calc, smoothing_radius, density, time_step,
-          gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc);
+        corrective_matrix_calc, smoothing_radius, density, time_step,
+        gravity_x, gravity_y, coeff_factor, A_petsc, b_petsc,
+        (velocity_divergence_out != nullptr) ? &divergence_value : nullptr);
+    if (velocity_divergence_out != nullptr) {
+      (*velocity_divergence_out)[particle_idx] = divergence_value;
+    }
   }
   
   // 组装矩阵和向量
@@ -275,7 +273,8 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
     double gravity_y,
     double coeff_factor,
     Mat& A_petsc,
-    Vec& b_petsc) const {
+    Vec& b_petsc,
+    double* velocity_divergence_out) const {
   
   const double2& pos_i = fluid_particles.position[particle_idx];
   const double2& vel_i = fluid_particles.velocity[particle_idx];
@@ -361,8 +360,11 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
             dx, dy, normal.x, normal.y, smoothing_radius);
     
     // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
-    double dvx = vel_wall.x - vel_i.x;
-    double dvy = vel_wall.y - vel_i.y;
+    // 壁面贡献使用有效速度 vel_wall + Δt*g，不修改原始 solid 数组
+    double vel_wall_eff_x = vel_wall.x + time_step * gravity_x;
+    double vel_wall_eff_y = vel_wall.y + time_step * gravity_y;
+    double dvx = vel_wall_eff_x - vel_i.x;
+    double dvy = vel_wall_eff_y - vel_i.y;
     double C1P = (C1_velocity * basis_velocity)(0, 0);
     double C2P = (C2_velocity * basis_velocity)(0, 0);
     divergence_sum += weight * (C1P * dvx + C2P * dvy);
@@ -381,9 +383,14 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   
   // 设置右边项
   // 速度散度项前的系数 1 / (r_s * Δt)
-  double b_value = (1.0 / (smoothing_radius * time_step)) * divergence_sum +
-      coeff_factor * wall_pressure_term;
+  double divergence_term = (1.0 / (smoothing_radius * time_step)) * divergence_sum;
+  double b_value = divergence_term + coeff_factor * wall_pressure_term;
   VecSetValue(b_petsc, row, b_value, INSERT_VALUES);
+  
+  // 如果需要调试输出，则返回当前粒子的临时速度散度（仅速度项）
+  if (velocity_divergence_out != nullptr) {
+    *velocity_divergence_out = divergence_term;
+  }
 }
 
 } // namespace mps2D

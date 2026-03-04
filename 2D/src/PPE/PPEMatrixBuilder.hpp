@@ -49,7 +49,9 @@ public:
       double gravity_x,
       double gravity_y,
       Mat& A_petsc,
-      Vec& b_petsc);
+      Vec& b_petsc,
+      // 可选调试输出：每个流体粒子的临时速度散度（仅速度项，不含壁面压力项）
+      std::vector<double>* velocity_divergence_out = nullptr);
 
   // 调试函数：将系数矩阵的对角线元素和右边项输出到VTK文件
   // 参数：
@@ -99,7 +101,9 @@ private:
       double gravity_y,
       double coeff_factor,
       Mat& A_petsc,
-      Vec& b_petsc) const;
+      Vec& b_petsc,
+      // 可选调试输出：当前粒子的临时速度散度（仅速度项，不含壁面压力项）
+      double* velocity_divergence_out) const;
 };
 
 } // namespace mps2D

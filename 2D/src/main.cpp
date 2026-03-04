@@ -649,6 +649,8 @@ int main(int argc, char* argv[]) {
         }
         Mat A_petsc = NULL;
         Vec b_petsc = NULL;
+        // 调试：保存PPE构建中使用的临时速度散度（仅速度项，不含壁面压力项）
+        std::vector<double> velocity_divergence(num_fluid, 0.0);
         
         try {
           bool build_success = ppe_matrix_builder.BuildPPEMatrixPetsc(
@@ -660,7 +662,8 @@ int main(int argc, char* argv[]) {
               time_step,
               particle_config.particle_spacing,
               sim_config.gravity_x, sim_config.gravity_y,
-              A_petsc, b_petsc);
+              A_petsc, b_petsc,
+              &velocity_divergence);
           
           if (!build_success) {
             std::cerr << "\n错误：PPE矩阵构建失败（时间步 " << iteration << "）" << std::endl;
@@ -860,6 +863,15 @@ int main(int argc, char* argv[]) {
               } else {
                 std::cerr << "\n警告：无法追加 A 对角线系数到VTK文件" << std::endl;
                 flush_log();
+              }
+              
+              // 追加临时速度散度（用于PPE右端项，仅速度部分）
+              // 注意：只有在成功构建PPE矩阵时才有意义
+              if (!velocity_divergence.empty()) {
+                if (!file_operator.appendVTKScalar(output_file, "velocity_divergence", velocity_divergence)) {
+                  std::cerr << "\n警告：无法追加 velocity_divergence 到VTK文件" << std::endl;
+                  flush_log();
+                }
               }
               
               std::cout << " 完成: " << output_file << std::endl;
