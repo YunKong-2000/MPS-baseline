@@ -5,7 +5,10 @@
 
 namespace mps2D {
 
-double2 Correction::ComputePressureGradient(
+namespace {
+
+// 原有的 LSMPS type-A 压力梯度离散（保留给自由面/飞溅粒子使用）
+double2 ComputePressureGradientTypeAImpl(
     int particle_idx,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
@@ -70,7 +73,7 @@ double2 Correction::ComputePressureGradient(
     if (dist < 1e-10 || dist > smoothing_radius) {
       continue;
     }
-
+    
     double weight = WeightFunction(dist, smoothing_radius);
     
     // 使用壁面基函数（第二类边界条件）
@@ -104,6 +107,229 @@ double2 Correction::ComputePressureGradient(
   double grad_y = inv_rs * sum_y;
 
   return {grad_x, grad_y};
+}
+
+// Type-B LSMPS 压力梯度离散（用于内部粒子和近自由面粒子）
+double2 ComputePressureGradientTypeBImpl(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& moment_matrix_inverse,
+    double smoothing_radius,
+    double gravity_x,
+    double gravity_y,
+    double density) {
+
+  const double2& pos_i = fluid_particles.position[particle_idx];
+
+  // Type-B 使用 6 维基函数：p_ij, q_ij 参见 typeB.md
+  constexpr int kBasisSizeB = 6;
+  using MatrixB = Eigen::Matrix<double, kBasisSizeB, kBasisSizeB>;
+  using VectorB = Eigen::Matrix<double, kBasisSizeB, 1>;
+  using RowVectorB = Eigen::Matrix<double, 1, kBasisSizeB>;
+
+  MatrixB moment = MatrixB::Zero();
+  int neighbour_count = 0;
+
+  if (smoothing_radius <= 0.0) {
+    return ComputePressureGradientTypeAImpl(
+        particle_idx, fluid_particles, solid_particles,
+        moment_matrix_inverse, smoothing_radius,
+        gravity_x, gravity_y, density);
+  }
+
+  const double inv_rs = 1.0 / smoothing_radius;
+  const double inv_rs2 = inv_rs * inv_rs;
+
+  // 构建流体粒子部分的矩矩阵 M_i^{fluid}
+  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+    const double2& pos_j = fluid_particles.position[j];
+
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+
+    double weight = WeightFunction(dist, smoothing_radius);
+
+    VectorB pij;
+    pij[0] = 1.0;
+    pij[1] = dx * inv_rs;
+    pij[2] = dy * inv_rs;
+    pij[3] = 0.5 * dx * dx * inv_rs2;
+    pij[4] = 0.5 * dy * dy * inv_rs2;
+    pij[5] = dx * dy * inv_rs2;
+
+    moment += weight * pij * pij.transpose();
+    ++neighbour_count;
+  }
+
+  // 构建壁面粒子部分的矩矩阵 M_i^{wall}
+  for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+    const double2& pos_j = solid_particles.position[j];
+    const double2& normal = solid_particles.normal_vector[j];
+
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+
+    double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+    if (nn < 1e-10) {
+      continue;
+    }
+    double n_x = normal.x / nn;
+    double n_y = normal.y / nn;
+
+    double weight = WeightFunction(dist, smoothing_radius);
+
+    VectorB qij;
+    qij[0] = 0.0;
+    qij[1] = n_x;
+    qij[2] = n_y;
+    qij[3] = dx * n_x * inv_rs;
+    qij[4] = dy * n_y * inv_rs;
+    qij[5] = (dx * n_y + dy * n_x) * inv_rs;
+
+    moment += weight * qij * qij.transpose();
+    ++neighbour_count;
+  }
+
+  // 邻域不足或矩阵不可逆时回退到 Type-A
+  if (neighbour_count < kBasisSizeB) {
+    return ComputePressureGradientTypeAImpl(
+        particle_idx, fluid_particles, solid_particles,
+        moment_matrix_inverse, smoothing_radius,
+        gravity_x, gravity_y, density);
+  }
+
+  double det = moment.determinant();
+  if (std::abs(det) < 1e-12) {
+    return ComputePressureGradientTypeAImpl(
+        particle_idx, fluid_particles, solid_particles,
+        moment_matrix_inverse, smoothing_radius,
+        gravity_x, gravity_y, density);
+  }
+
+  // LSMPS 矩阵 C_i = (M_i^{fluid} + M_i^{wall})^{-1}
+  MatrixB C = moment.inverse();
+
+  // 压力梯度对应的两行（φ_x, φ_y）
+  RowVectorB Cx = C.row(1);
+  RowVectorB Cy = C.row(2);
+
+  double sum_fluid_x = 0.0;
+  double sum_fluid_y = 0.0;
+  double sum_wall_x = 0.0;
+  double sum_wall_y = 0.0;
+
+  // 流体邻域的压力梯度项：1/r_s Σ_j w_ij P_j [C_{i,2}; C_{i,3}] p_ij
+  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+    const double2& pos_j = fluid_particles.position[j];
+    double p_j = fluid_particles.pressure[j];
+
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+
+    double weight = WeightFunction(dist, smoothing_radius);
+
+    VectorB pij;
+    pij[0] = 1.0;
+    pij[1] = dx * inv_rs;
+    pij[2] = dy * inv_rs;
+    pij[3] = 0.5 * dx * dx * inv_rs2;
+    pij[4] = 0.5 * dy * dy * inv_rs2;
+    pij[5] = dx * dy * inv_rs2;
+
+    double coeff_x = Cx.dot(pij);
+    double coeff_y = Cy.dot(pij);
+
+    sum_fluid_x += weight * p_j * coeff_x;
+    sum_fluid_y += weight * p_j * coeff_y;
+  }
+
+  // 壁面邻域的压力梯度项：Σ_j w_ij ρ (g · n_j) [C_{i,2}; C_{i,3}] q_ij
+  for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+    const double2& pos_j = solid_particles.position[j];
+    const double2& normal = solid_particles.normal_vector[j];
+
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+
+    double nn = std::sqrt(normal.x * normal.x + normal.y * normal.y);
+    if (nn < 1e-10) {
+      continue;
+    }
+    double n_x = normal.x / nn;
+    double n_y = normal.y / nn;
+
+    double weight = WeightFunction(dist, smoothing_radius);
+
+    double dp_dn = density * (n_x * gravity_x + n_y * gravity_y);
+
+    VectorB qij;
+    qij[0] = 0.0;
+    qij[1] = n_x;
+    qij[2] = n_y;
+    qij[3] = dx * n_x * inv_rs;
+    qij[4] = dy * n_y * inv_rs;
+    qij[5] = (dx * n_y + dy * n_x) * inv_rs;
+
+    double coeff_x = Cx.dot(qij);
+    double coeff_y = Cy.dot(qij);
+
+    sum_wall_x += weight * dp_dn * coeff_x;
+    sum_wall_y += weight * dp_dn * coeff_y;
+  }
+
+  double grad_x = inv_rs * sum_fluid_x + sum_wall_x;
+  double grad_y = inv_rs * sum_fluid_y + sum_wall_y;
+
+  return {grad_x, grad_y};
+}
+
+}  // namespace
+
+double2 Correction::ComputePressureGradient(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& moment_matrix_inverse,
+    double smoothing_radius,
+    double gravity_x,
+    double gravity_y,
+    double density) {
+
+  SurfaceType surface_type = SurfaceType::INNER;
+  if (particle_idx >= 0 &&
+      particle_idx < static_cast<int>(fluid_particles.surface_type.size())) {
+    surface_type = fluid_particles.surface_type[particle_idx];
+  }
+
+  // 仅近自由面粒子使用 type-B，其余粒子使用原有 type-A
+  if (surface_type == SurfaceType::NEAR_SURFACE) {
+    return ComputePressureGradientTypeBImpl(
+        particle_idx, fluid_particles, solid_particles,
+        moment_matrix_inverse, smoothing_radius,
+        gravity_x, gravity_y, density);
+  }
+
+  return ComputePressureGradientTypeAImpl(
+      particle_idx, fluid_particles, solid_particles,
+      moment_matrix_inverse, smoothing_radius,
+      gravity_x, gravity_y, density);
 }
 
 double2 Correction::ComputeAcceleration(
