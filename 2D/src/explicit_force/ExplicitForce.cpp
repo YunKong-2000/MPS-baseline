@@ -13,6 +13,12 @@ double2 ExplicitForce::ComputeVelocityLaplacian(
   
   const double2& pos_i = fluid_particles.position[particle_idx];
   const double2& v_i = velocity_field[particle_idx];
+
+  // 飞溅粒子：不计算重力外的任何外力项（黏性/拉普拉斯等）
+  if (static_cast<size_t>(particle_idx) < fluid_particles.surface_type.size() &&
+      fluid_particles.surface_type[particle_idx] == SurfaceType::SPLASH) {
+    return {0.0, 0.0};
+  }
   
   // 提取 moment matrix 逆矩阵的第3行和第4行（用于拉普拉斯算子计算）
   // 文档中对应 [M_{i,2} + M_{i,3}]
@@ -150,6 +156,11 @@ void ExplicitForce::ComputeAndUpdateVelocity(
   // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
   std::vector<double2> viscous_accelerations(num_particles);
   for (int i = 0; i < num_particles; ++i) {
+    if (static_cast<size_t>(i) < fluid_particles.surface_type.size() &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      viscous_accelerations[i] = {0.0, 0.0};
+      continue;
+    }
     // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
     double2 velocity_laplacian = ComputeVelocityLaplacian(
         i,
@@ -197,6 +208,11 @@ void ExplicitForce::ComputeAndUpdateVelocity(
   
   // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
   for (int i = 0; i < num_particles; ++i) {
+    if (static_cast<size_t>(i) < fluid_particles.surface_type.size() &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      viscous_acceleration[i] = {0.0, 0.0};
+      continue;
+    }
     // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
     double2 velocity_laplacian = ComputeVelocityLaplacian(
         i,

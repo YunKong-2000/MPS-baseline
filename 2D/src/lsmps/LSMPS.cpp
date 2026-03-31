@@ -48,6 +48,17 @@ CorrectiveMatrix::ComputeMomentMatrix(
   Eigen::MatrixXd M = BuildCoefficientMatrix(
       particle_idx, fluid_particles, solid_particles, smoothing_radius, border_condition);
 
+  // 对自由面/近自由面粒子对moment矩阵做对角线正则化，提升求逆稳定性
+  // （按你的要求：对角线上加 0.001）
+  constexpr double kDiagonalAdd = 1e-3;
+  if (particle_idx >= 0 &&
+      particle_idx < static_cast<int>(fluid_particles.surface_type.size())) {
+    const SurfaceType st = fluid_particles.surface_type[particle_idx];
+    if (st == SurfaceType::SURFACE || st == SurfaceType::NEAR_SURFACE) {
+      M.diagonal().array() += kDiagonalAdd;
+    }
+  }
+
   // 检查矩阵是否可逆
   if (!IsMatrixInvertible(M)) {
     return Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>::Identity();
@@ -90,6 +101,17 @@ CorrectiveMatrix::ComputeMomentMatrixFluidOnly(
     C += weight * basis * basis.transpose();
   }
   
+  // 对自由面/近自由面粒子对moment矩阵做对角线正则化，提升求逆稳定性
+  // （按你的要求：对角线上加 0.001）
+  constexpr double kDiagonalAdd = 1e-3;
+  if (particle_idx >= 0 &&
+      particle_idx < static_cast<int>(fluid_particles.surface_type.size())) {
+    const SurfaceType st = fluid_particles.surface_type[particle_idx];
+    if (st == SurfaceType::SURFACE || st == SurfaceType::NEAR_SURFACE) {
+      C.diagonal().array() += kDiagonalAdd;
+    }
+  }
+
   // 检查矩阵是否可逆
   if (!IsMatrixInvertible(C)) {
     return Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>::Identity();

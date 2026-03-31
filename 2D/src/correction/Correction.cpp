@@ -6,6 +6,7 @@
 namespace mps2D {
 
 namespace {
+constexpr double kVelocitySmoothingAlpha = 0.15;
 
 // 原有的 LSMPS type-A 压力梯度离散（保留给自由面/飞溅粒子使用）
 double2 ComputePressureGradientTypeAImpl(
@@ -207,6 +208,19 @@ double2 ComputePressureGradientTypeBImpl(
         gravity_x, gravity_y, density);
   }
 
+  // 对自由面/近自由面粒子对moment矩阵做对角线正则化，提升求逆稳定性
+  // （按你的要求：对角线上加 0.001）
+  constexpr double kDiagonalAdd = 1e-3;
+  SurfaceType surface_type = SurfaceType::INNER;
+  if (particle_idx >= 0 &&
+      particle_idx < static_cast<int>(fluid_particles.surface_type.size())) {
+    surface_type = fluid_particles.surface_type[particle_idx];
+  }
+  if (surface_type == SurfaceType::SURFACE ||
+      surface_type == SurfaceType::NEAR_SURFACE) {
+    moment.diagonal().array() += kDiagonalAdd;
+  }
+
   double det = moment.determinant();
   if (std::abs(det) < 1e-12) {
     return ComputePressureGradientTypeAImpl(
@@ -318,6 +332,11 @@ double2 Correction::ComputePressureGradient(
     surface_type = fluid_particles.surface_type[particle_idx];
   }
 
+  // 飞溅粒子：不计压力梯度，压力修正步仅由显式步中的重力等贡献速度（此处 ∇p≡0）
+  if (surface_type == SurfaceType::SPLASH) {
+    return {0.0, 0.0};
+  }
+
   // 仅近自由面粒子使用 type-B，其余粒子使用原有 type-A
   if (surface_type == SurfaceType::NEAR_SURFACE) {
     return ComputePressureGradientTypeBImpl(
@@ -396,10 +415,55 @@ void Correction::ComputeAndUpdateAllParticles(
     // 计算加速度
     accelerations[i] = ComputeAcceleration(pressure_gradient, density);
   }
-  
-  // 第二步：统一更新所有粒子的速度和位置
+
+  // 第二步：先计算压力修正后的速度 u**（不立即写回，避免顺序依赖）
+  std::vector<double2> velocity_after_pressure(num_particles);
   for (int i = 0; i < num_particles; ++i) {
-    UpdateVelocityAndPosition(i, fluid_particles, accelerations[i], time_step);
+    velocity_after_pressure[i] = fluid_particles.velocity[i];
+    velocity_after_pressure[i].x += accelerations[i].x * time_step;
+    velocity_after_pressure[i].y += accelerations[i].y * time_step;
+  }
+
+  // 第三步：基于邻域流体粒子的 u** 计算加权均值 A_i
+  std::vector<double2> smoothed_velocity(num_particles);
+  for (int i = 0; i < num_particles; ++i) {
+    const double2& pos_i = fluid_particles.position[i];
+    const auto& neighbours = fluid_particles.fluid_neighbour_list[i];
+
+    double weight_sum = 0.0;
+    double2 weighted_velocity_sum{0.0, 0.0};
+    for (int j : neighbours) {
+      const double dist = ComputeDistance(pos_i, fluid_particles.position[j]);
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+
+      const double weight = WeightFunction(dist, smoothing_radius);
+      weight_sum += weight;
+      weighted_velocity_sum.x += velocity_after_pressure[j].x * weight;
+      weighted_velocity_sum.y += velocity_after_pressure[j].y * weight;
+    }
+
+    double2 neighbour_avg = velocity_after_pressure[i];
+    if (weight_sum > 1e-12) {
+      neighbour_avg.x = weighted_velocity_sum.x / weight_sum;
+      neighbour_avg.y = weighted_velocity_sum.y / weight_sum;
+    }
+
+    // 第四步：按文档公式混合，得到下一时间步速度 u^{k+1}
+    smoothed_velocity[i].x =
+        (1.0 - kVelocitySmoothingAlpha) * velocity_after_pressure[i].x +
+        kVelocitySmoothingAlpha * neighbour_avg.x;
+    smoothed_velocity[i].y =
+        (1.0 - kVelocitySmoothingAlpha) * velocity_after_pressure[i].y +
+        kVelocitySmoothingAlpha * neighbour_avg.y;
+  }
+
+  // 第五步：统一写回速度并更新位置
+  for (int i = 0; i < num_particles; ++i) {
+    fluid_particles.velocity[i] = smoothed_velocity[i];
+    fluid_particles.position[i].x += fluid_particles.velocity[i].x * time_step;
+    fluid_particles.position[i].y += fluid_particles.velocity[i].y * time_step;
   }
 }
 
@@ -444,10 +508,55 @@ void Correction::ComputeAndUpdateAllParticles(
     // 计算加速度
     accelerations[i] = ComputeAcceleration(pressure_gradient, density);
   }
-  
-  // 第二步：统一更新所有粒子的速度和位置
+
+  // 第二步：先计算压力修正后的速度 u**（不立即写回，避免顺序依赖）
+  std::vector<double2> velocity_after_pressure(num_particles);
   for (int i = 0; i < num_particles; ++i) {
-    UpdateVelocityAndPosition(i, fluid_particles, accelerations[i], time_step);
+    velocity_after_pressure[i] = fluid_particles.velocity[i];
+    velocity_after_pressure[i].x += accelerations[i].x * time_step;
+    velocity_after_pressure[i].y += accelerations[i].y * time_step;
+  }
+
+  // 第三步：基于邻域流体粒子的 u** 计算加权均值 A_i
+  std::vector<double2> smoothed_velocity(num_particles);
+  for (int i = 0; i < num_particles; ++i) {
+    const double2& pos_i = fluid_particles.position[i];
+    const auto& neighbours = fluid_particles.fluid_neighbour_list[i];
+
+    double weight_sum = 0.0;
+    double2 weighted_velocity_sum{0.0, 0.0};
+    for (int j : neighbours) {
+      const double dist = ComputeDistance(pos_i, fluid_particles.position[j]);
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+
+      const double weight = WeightFunction(dist, smoothing_radius);
+      weight_sum += weight;
+      weighted_velocity_sum.x += velocity_after_pressure[j].x * weight;
+      weighted_velocity_sum.y += velocity_after_pressure[j].y * weight;
+    }
+
+    double2 neighbour_avg = velocity_after_pressure[i];
+    if (weight_sum > 1e-12) {
+      neighbour_avg.x = weighted_velocity_sum.x / weight_sum;
+      neighbour_avg.y = weighted_velocity_sum.y / weight_sum;
+    }
+
+    // 第四步：按文档公式混合，得到下一时间步速度 u^{k+1}
+    smoothed_velocity[i].x =
+        (1.0 - kVelocitySmoothingAlpha) * velocity_after_pressure[i].x +
+        kVelocitySmoothingAlpha * neighbour_avg.x;
+    smoothed_velocity[i].y =
+        (1.0 - kVelocitySmoothingAlpha) * velocity_after_pressure[i].y +
+        kVelocitySmoothingAlpha * neighbour_avg.y;
+  }
+
+  // 第五步：统一写回速度并更新位置
+  for (int i = 0; i < num_particles; ++i) {
+    fluid_particles.velocity[i] = smoothed_velocity[i];
+    fluid_particles.position[i].x += fluid_particles.velocity[i].x * time_step;
+    fluid_particles.position[i].y += fluid_particles.velocity[i].y * time_step;
   }
 }
 

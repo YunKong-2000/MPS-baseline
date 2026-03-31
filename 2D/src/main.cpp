@@ -9,6 +9,7 @@
 #include "PPE/PPEMatrixBuilder.hpp"
 #include "PPE/PPESolver.hpp"
 #include "correction/Correction.hpp"
+#include "particle_shifting/ParticleShifting.hpp"
 #include "core/ErrorHandling.h"
 #include "../../third_party/ini/SimpleIni.h"
 #include <iostream>
@@ -327,21 +328,33 @@ int main(int argc, char* argv[]) {
     CorrectiveMatrix corrective_matrix_calc;
     ExplicitForce explicit_force;
     SurfaceDetector surface_detector;
+    ParticleShifting particle_shifting;
     PPEMatrixBuilder ppe_matrix_builder;
     PPESolver ppe_solver;
     Correction correction;
     
     // PPE求解器配置
-    // 直接求解 Ap = b（自由面粒子采用行修改法施加 p_i = 0）
+    // 罚函数法：求解正规方程 (A^T A + D) p = A^T b（自由面约束通过罚项加入）
     PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::BICGSTAB;  // 推荐用于非对称矩阵
+    solver_config.solver_type = PPESolver::SolverType::CG;  // 对称正定矩阵推荐CG
     solver_config.max_iterations = 10000;  // 最大迭代次数
     solver_config.tolerance = 1e-6;  // 容差
     solver_config.force_iterative = true;  // 强制使用迭代求解器
-    solver_config.is_symmetric_positive_definite = false;
+    solver_config.is_symmetric_positive_definite = true;
     solver_config.restart = 30;  // GMRES重启参数（仅GMRES有效）
     ppe_solver.SetConfig(solver_config);
-    
+
+    // 罚函数参数（可在配置文件中通过 [PPE] PenaltyMu 指定）
+    // 若未指定或指定为负数，则使用一个与原行修改法对角线尺度一致的默认值：
+    //   penalty_mu = 1e6 * (1 / (dx^2 * rho))
+    const double dx_for_penalty = (particle_config.particle_spacing > 0.0) ? particle_config.particle_spacing : 1e-12;
+    const double default_penalty_mu = 1e6 * (1.0 / (dx_for_penalty * dx_for_penalty * sim_config.density));
+    double penalty_mu = ini.GetDoubleValue("PPE", "PenaltyMu", -1.0);
+    if (penalty_mu <= 0.0) {
+      penalty_mu = default_penalty_mu;
+    }
+    std::cout << "PPE罚函数参数 penalty_mu = " << std::scientific << penalty_mu << std::fixed << std::endl;
+
     // ========== 模拟循环 ==========
     std::cout << "\n========== 开始模拟循环 ==========" << std::endl;
     std::cout << "总仿真时间: " << sim_config.total_time << " s" << std::endl;
@@ -443,9 +456,18 @@ int main(int argc, char* argv[]) {
         }
         try {
           for (int i = 0; i < num_fluid; ++i) {
-            corrective_matrices_explicit[i] = corrective_matrix_calc.ComputeCorrectiveMatrix(
-                i, fluid_particles, solid_particles,
-                particle_config.smoothing_radius, false);  // 第一类边界条件
+            // 飞溅粒子不计算任何 LSMPS moment/corrective 矩阵
+            if (fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+              corrective_matrices_explicit[i] =
+                  Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE,
+                                CorrectiveMatrix::MATRIX_SIZE>::Identity();
+              continue;
+            }
+            corrective_matrices_explicit[i] =
+                corrective_matrix_calc.ComputeCorrectiveMatrix(
+                    i, fluid_particles, solid_particles,
+                    particle_config.smoothing_radius,
+                    false);  // 第一类边界条件
           }
           if (should_output_detail) {
             auto step_end = std::chrono::steady_clock::now();
@@ -621,10 +643,18 @@ int main(int argc, char* argv[]) {
         
         try {
           for (int i = 0; i < num_fluid; ++i) {
+            // 飞溅粒子不计算任何 LSMPS moment/corrective 矩阵
+            if (fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+              corrective_matrices_ppe_pressure[i] =
+                  Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE,
+                                CorrectiveMatrix::MATRIX_SIZE>::Identity();
+              continue;
+            }
             // 压力梯度使用第二类边界条件
-            corrective_matrices_ppe_pressure[i] = corrective_matrix_calc.ComputeCorrectiveMatrix(
-                i, fluid_particles, solid_particles,
-                particle_config.smoothing_radius, true);
+            corrective_matrices_ppe_pressure[i] =
+                corrective_matrix_calc.ComputeCorrectiveMatrix(
+                    i, fluid_particles, solid_particles,
+                    particle_config.smoothing_radius, true);
           }
           if (should_output_detail) {
             auto step_end = std::chrono::steady_clock::now();
@@ -642,18 +672,21 @@ int main(int argc, char* argv[]) {
         // 因为显式更新不改变粒子位置，所以可以直接复用
         const auto& corrective_matrices_ppe_velocity = corrective_matrices_explicit;
       
-        // 步骤6：构建PPE
+        // 步骤6：构建PPE（罚函数正规方程 Kp=f）
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤6/8] 构建PPE系数矩阵和右边项..." << std::flush;
+          std::cout << "  [步骤6/8] 构建PPE正规方程（K=A^T A + D, f=A^T b）..." << std::flush;
         }
-        Mat A_petsc = NULL;
-        Vec b_petsc = NULL;
+        Mat K_petsc = NULL;
+        Vec f_petsc = NULL;
         // 调试：保存PPE构建中使用的临时速度散度（仅速度项，不含壁面压力项）
         std::vector<double> velocity_divergence(num_fluid, 0.0);
+        // 调试：保存 PPE 系数矩阵 A 的主对角线绝对值 |A_ii| 以及源项绝对值 |b_i|
+        std::vector<double> diag_abs(num_fluid, 0.0);
+        std::vector<double> rhs_abs(num_fluid, 0.0);
         
         try {
-          bool build_success = ppe_matrix_builder.BuildPPEMatrixPetsc(
+          bool build_success = ppe_matrix_builder.BuildPPEPenaltyNormalEquationPetsc(
               fluid_particles, solid_particles,
               corrective_matrices_ppe_velocity,  // 用于速度散度
               corrective_matrices_ppe_pressure,  // 用于压力边界条件
@@ -662,14 +695,15 @@ int main(int argc, char* argv[]) {
               time_step,
               particle_config.particle_spacing,
               sim_config.gravity_x, sim_config.gravity_y,
-              A_petsc, b_petsc,
-              &velocity_divergence);
+              penalty_mu,
+              K_petsc, f_petsc,
+              &velocity_divergence, &diag_abs, &rhs_abs);
           
           if (!build_success) {
             std::cerr << "\n错误：PPE矩阵构建失败（时间步 " << iteration << "）" << std::endl;
             flush_log();
-            if (A_petsc != NULL) MatDestroy(&A_petsc);
-            if (b_petsc != NULL) VecDestroy(&b_petsc);
+            if (K_petsc != NULL) MatDestroy(&K_petsc);
+            if (f_petsc != NULL) VecDestroy(&f_petsc);
             throw std::runtime_error("PPE矩阵构建失败");
           }
           if (should_output_detail) {
@@ -681,21 +715,21 @@ int main(int argc, char* argv[]) {
         } catch (const std::exception& e) {
           std::cerr << "\n错误：构建PPE矩阵时发生异常 - " << e.what() << std::endl;
           flush_log();
-          if (A_petsc != NULL) MatDestroy(&A_petsc);
-          if (b_petsc != NULL) VecDestroy(&b_petsc);
+          if (K_petsc != NULL) MatDestroy(&K_petsc);
+          if (f_petsc != NULL) VecDestroy(&f_petsc);
           throw;
         }
         
-        // 步骤7：求解PPE（直接求解 Ap = b）
+        // 步骤7：求解PPE（求解 Kp = f）
         step_start = std::chrono::steady_clock::now();
         if (should_output_detail) {
-          std::cout << "  [步骤7/8] 求解PPE（直接求解 Ap = b，BiCGSTAB求解器）..." << std::flush;
+          std::cout << "  [步骤7/8] 求解PPE（求解 Kp = f，对称正定矩阵）..." << std::flush;
         }
         Vec p_petsc = NULL;
         bool solve_success = false;
         
         try {
-          solve_success = ppe_solver.Solve(A_petsc, b_petsc, p_petsc);
+          solve_success = ppe_solver.Solve(K_petsc, f_petsc, p_petsc);
           
           if (!solve_success) {
             std::cerr << "\n警告：PPE求解未收敛（时间步 " << iteration 
@@ -707,8 +741,8 @@ int main(int argc, char* argv[]) {
               VecDestroy(&p_petsc);
               p_petsc = NULL;
             }
-            if (A_petsc != NULL) MatDestroy(&A_petsc);
-            if (b_petsc != NULL) VecDestroy(&b_petsc);
+            if (K_petsc != NULL) MatDestroy(&K_petsc);
+            if (f_petsc != NULL) VecDestroy(&f_petsc);
             // 继续执行，不退出（允许程序继续运行）
           } else {
             if (should_output_detail) {
@@ -725,8 +759,8 @@ int main(int argc, char* argv[]) {
           std::cerr << "\n错误：求解PPE时发生异常 - " << e.what() << std::endl;
           flush_log();
           if (p_petsc != NULL) VecDestroy(&p_petsc);
-          if (A_petsc != NULL) MatDestroy(&A_petsc);
-          if (b_petsc != NULL) VecDestroy(&b_petsc);
+          if (K_petsc != NULL) MatDestroy(&K_petsc);
+          if (f_petsc != NULL) VecDestroy(&f_petsc);
           throw;
         }
         
@@ -743,18 +777,18 @@ int main(int argc, char* argv[]) {
           // 这里可以选择跳过压力修正步骤
         }
         
-        // ========== 提取 A 矩阵的对角线系数（用于输出到VTK）==========
-        std::vector<double> A_diagonal(num_fluid, 0.0);
+        // ========== 提取 K 矩阵的对角线系数（用于输出到VTK）==========
+        std::vector<double> K_diagonal(num_fluid, 0.0);
         
-        if (A_petsc != NULL) {
-          // 提取 A 矩阵的对角线
+        if (K_petsc != NULL) {
+          // 提取 K 矩阵的对角线
           for (int i = 0; i < num_fluid; ++i) {
             PetscInt row = static_cast<PetscInt>(i);
             PetscInt col = static_cast<PetscInt>(i);
             PetscScalar diag_val;
-            PetscErrorCode ierr = MatGetValue(A_petsc, row, col, &diag_val);
+            PetscErrorCode ierr = MatGetValue(K_petsc, row, col, &diag_val);
             if (ierr == 0) {
-              A_diagonal[i] = static_cast<double>(diag_val);
+              K_diagonal[i] = static_cast<double>(diag_val);
             }
           }
         }
@@ -790,7 +824,41 @@ int main(int argc, char* argv[]) {
         }
         
         // 注意：corrective_matrices_explicit在下次循环开始时会重新计算，不需要复制
-        
+
+        // 附加步骤：Particle Shifting（按文档公式执行）
+        std::vector<double2> ps_displacement(num_fluid, double2{0.0, 0.0});
+        std::vector<double> ps_rve(num_fluid, 0.0);
+        std::vector<double> ps_temp_number_density(num_fluid, 0.0);
+        // PS 前（即压力修正后、更新位姿前）的自由面法向与速度梯度（用于VTK调试）
+        std::vector<double2> ps_free_surface_normals(num_fluid, double2{0.0, 0.0});
+        std::vector<double> ps_velocity_grad_xx(num_fluid, 0.0);
+        std::vector<double> ps_velocity_grad_xy(num_fluid, 0.0);
+        std::vector<double> ps_velocity_grad_yx(num_fluid, 0.0);
+        std::vector<double> ps_velocity_grad_yy(num_fluid, 0.0);
+        step_start = std::chrono::steady_clock::now();
+        if (should_output_detail) {
+          std::cout << "  [附加步骤] Particle Shifting：更新速度与位置..." << std::flush;
+        }
+        try {
+          particle_shifting.Apply(
+              fluid_particles, solid_particles, corrective_matrices_explicit,
+              particle_config.smoothing_radius, particle_config.particle_spacing,
+              &ps_displacement, &ps_rve, &ps_temp_number_density,
+              &ps_free_surface_normals,
+              &ps_velocity_grad_xx, &ps_velocity_grad_xy,
+              &ps_velocity_grad_yx, &ps_velocity_grad_yy);
+          if (should_output_detail) {
+            auto step_end = std::chrono::steady_clock::now();
+            auto step_duration = std::chrono::duration_cast<std::chrono::milliseconds>(step_end - step_start).count();
+            std::cout << " 完成 (" << step_duration << " ms)" << std::endl;
+            flush_log();
+          }
+        } catch (const std::exception& e) {
+          std::cerr << "\n错误：Particle Shifting 失败 - " << e.what() << std::endl;
+          flush_log();
+          throw;
+        }
+
         // 清理PETSc对象（确保所有对象都被正确清理）
         // 注意：按照创建顺序的逆序销毁，避免依赖问题
         // 如果求解失败，这些对象可能已经被清理，需要检查
@@ -798,13 +866,13 @@ int main(int argc, char* argv[]) {
           VecDestroy(&p_petsc);
           p_petsc = NULL;
         }
-        if (b_petsc != NULL) {
-          VecDestroy(&b_petsc);
-          b_petsc = NULL;
+        if (f_petsc != NULL) {
+          VecDestroy(&f_petsc);
+          f_petsc = NULL;
         }
-        if (A_petsc != NULL) {
-          MatDestroy(&A_petsc);
-          A_petsc = NULL;
+        if (K_petsc != NULL) {
+          MatDestroy(&K_petsc);
+          K_petsc = NULL;
         }
         
         // 动态调整时间步（时间步会自动更新到time_manager中）
@@ -815,7 +883,7 @@ int main(int argc, char* argv[]) {
           flush_log();
         }
         
-#if 1       // 步骤9：判断是否需要输出计算结果
+#if 1  // 步骤9：判断是否需要输出计算结果
         if (time_manager.ShouldOutput()) {
 #else 
         if (1) {
@@ -834,46 +902,42 @@ int main(int argc, char* argv[]) {
             // 输出流体粒子VTK文件
             bool write_success = file_operator.writeVTKBase(output_file, fluid_particles);
             if (write_success) {
-              // 追加压力和密度数据（标量）
+              // 追加压力（标量）
               file_operator.appendVTKScalar(output_file, "pressure", fluid_particles.pressure);
-              file_operator.appendVTKScalar(output_file, "density", fluid_particles.density);
               
-              // 追加显式更新后的速度向量（vector格式）
-              file_operator.appendVTKVector(output_file, "velocity_explicit", velocity_explicit);
+              // 速度项：仅输出当前速度
+              file_operator.appendVTKVector(output_file, "velocity", fluid_particles.velocity);
+
+              // PPE 构建阶段调试输出
+              file_operator.appendVTKScalar(output_file, "velocity_divergence", velocity_divergence);
+              file_operator.appendVTKScalar(output_file, "diag_abs", diag_abs);
+              file_operator.appendVTKScalar(output_file, "rhs_abs", rhs_abs);
               
-              // 追加correction后的速度向量（vector格式）
-              file_operator.appendVTKVector(output_file, "velocity_corrected", fluid_particles.velocity);
-              
-              // 追加压力梯度向量（vector格式）- 使用correction模块中计算的压力梯度
+              // 追加压力梯度向量（vector格式）
               file_operator.appendVTKVector(output_file, "pressure_gradient", pressure_gradients_for_output);
               
-              // 追加表面类型（作为标量）
+              // 追加表面类型（标量）
               std::vector<int> surface_type_int(num_fluid);
               for (int i = 0; i < num_fluid; ++i) {
                 surface_type_int[i] = static_cast<int>(fluid_particles.surface_type[i]);
               }
               file_operator.appendVTKScalar(output_file, "surface_type", surface_type_int);
-              
-              // 追加粘性力向量（vector格式）- 使用explicit_force模块计算出的粘性力加速度
-              file_operator.appendVTKVector(output_file, "viscous_force", viscous_acceleration);
-              
-              // 追加原始 PPE 矩阵 A 的对角线系数
-              if (file_operator.appendVTKScalar(output_file, "A_diagonal", A_diagonal)) {
-                // 成功追加
-              } else {
-                std::cerr << "\n警告：无法追加 A 对角线系数到VTK文件" << std::endl;
-                flush_log();
-              }
-              
-              // 追加临时速度散度（用于PPE右端项，仅速度部分）
-              // 注意：只有在成功构建PPE矩阵时才有意义
-              if (!velocity_divergence.empty()) {
-                if (!file_operator.appendVTKScalar(output_file, "velocity_divergence", velocity_divergence)) {
-                  std::cerr << "\n警告：无法追加 velocity_divergence 到VTK文件" << std::endl;
-                  flush_log();
-                }
-              }
-              
+              file_operator.appendVTKVector(output_file, "ps_displacement", ps_displacement);
+              file_operator.appendVTKScalar(output_file, "ps_rve", ps_rve);
+              file_operator.appendVTKScalar(output_file, "ps_temp_number_density",
+                                            ps_temp_number_density);
+              // PS 前调试输出（自由面法向与速度梯度）
+              file_operator.appendVTKVector(
+                  output_file, "free_surface_normal", ps_free_surface_normals);
+              file_operator.appendVTKScalar(
+                  output_file, "velocity_grad_xx", ps_velocity_grad_xx);
+              file_operator.appendVTKScalar(
+                  output_file, "velocity_grad_xy", ps_velocity_grad_xy);
+              file_operator.appendVTKScalar(
+                  output_file, "velocity_grad_yx", ps_velocity_grad_yx);
+              file_operator.appendVTKScalar(
+                  output_file, "velocity_grad_yy", ps_velocity_grad_yy);
+
               std::cout << " 完成: " << output_file << std::endl;
               flush_log();
             } else {

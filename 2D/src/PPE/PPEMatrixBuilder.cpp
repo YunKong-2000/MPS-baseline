@@ -14,6 +14,127 @@
 
 namespace mps2D {
 
+namespace {
+
+// 与 BuildInnerParticleRow 中流体邻域项一致，仅返回拉普拉斯离散对角系数（不含壁面项）
+double ComputeLaplacianDiagonalCoeffOnly(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix_pressure,
+    CorrectiveMatrix& corrective_matrix_calc,
+    double smoothing_radius,
+    double coeff_factor) {
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_pressure =
+      corrective_matrix_pressure.row(2);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M3_pressure =
+      corrective_matrix_pressure.row(3);
+  Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> M2_plus_M3_pressure =
+      M2_pressure + M3_pressure;
+
+  double diag_sum = 0.0;
+  for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+    const double2& pos_j = fluid_particles.position[j];
+    double dx = pos_j.x - pos_i.x;
+    double dy = pos_j.y - pos_i.y;
+    double dist = ComputeDistance(pos_i, pos_j);
+    if (dist < 1e-10 || dist > smoothing_radius) {
+      continue;
+    }
+    double weight = WeightFunction(dist, smoothing_radius);
+    Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis =
+        corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+    double common_coeff = weight * (M2_plus_M3_pressure * basis)(0, 0);
+    diag_sum += common_coeff;
+  }
+  return -coeff_factor * diag_sum;
+}
+
+// 取与内部粒子同阶的对角元尺度，用于飞溅粒子 PPE 行
+double ChooseSplashReferenceDiagonal(
+    const FluidParticle& fluid_particles,
+    const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_pressure,
+    double smoothing_radius,
+    double coeff_factor) {
+  CorrectiveMatrix corrective_matrix_calc;
+  auto diag_for = [&](int idx) -> double {
+    return ComputeLaplacianDiagonalCoeffOnly(
+        idx, fluid_particles, corrective_matrices_pressure[idx],
+        corrective_matrix_calc, smoothing_radius, coeff_factor);
+  };
+  const int n = fluid_particles.particle_num;
+  for (int i = 0; i < n; ++i) {
+    if (static_cast<size_t>(i) >= fluid_particles.surface_type.size()) {
+      break;
+    }
+    if (fluid_particles.surface_type[i] == SurfaceType::INNER) {
+      double v = diag_for(i);
+      if (std::abs(v) > 1e-30) {
+        return v;
+      }
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    if (static_cast<size_t>(i) >= fluid_particles.surface_type.size()) {
+      break;
+    }
+    if (fluid_particles.surface_type[i] != SurfaceType::SPLASH) {
+      double v = diag_for(i);
+      if (std::abs(v) > 1e-30) {
+        return v;
+      }
+    }
+  }
+  return -std::max(std::abs(coeff_factor), 1e-12);
+}
+
+// 罚函数正规方程 Kp=f 上强制 p_i=0（齐次 Dirichlet），保证飞溅自由度严格为零
+void ApplySplashDirichletOnPenaltySystem(Mat K_petsc, Vec f_petsc,
+                                         const FluidParticle& fluid_particles) {
+  const int n = fluid_particles.particle_num;
+  std::vector<PetscInt> rows;
+  for (int i = 0; i < n; ++i) {
+    if (static_cast<size_t>(i) < fluid_particles.surface_type.size() &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      rows.push_back(static_cast<PetscInt>(i));
+    }
+  }
+  if (rows.empty()) {
+    return;
+  }
+  PetscScalar diag_bc = 1.0;
+  for (int i = 0; i < n; ++i) {
+    if (static_cast<size_t>(i) < fluid_particles.surface_type.size() &&
+        fluid_particles.surface_type[i] != SurfaceType::SPLASH) {
+      PetscInt r = static_cast<PetscInt>(i);
+      PetscScalar v = 0.0;
+      PetscErrorCode ierr_g = MatGetValue(K_petsc, r, r, &v);
+      if (ierr_g != 0) {
+        continue;
+      }
+      double vd = std::abs(static_cast<double>(v));
+      if (vd > 1e-30) {
+        diag_bc = static_cast<PetscScalar>(vd);
+        break;
+      }
+    }
+  }
+  PetscErrorCode ierr = MatZeroRowsColumns(
+      K_petsc, static_cast<PetscInt>(rows.size()), rows.data(), diag_bc,
+      nullptr, f_petsc);
+  if (ierr != 0) {
+    std::cerr << "警告：MatZeroRowsColumns（飞溅粒子 Dirichlet）失败， ierr=" << ierr
+              << std::endl;
+    return;
+  }
+  MatAssemblyBegin(K_petsc, MAT_FINAL_ASSEMBLY);
+  MatAssemblyEnd(K_petsc, MAT_FINAL_ASSEMBLY);
+  VecAssemblyBegin(f_petsc);
+  VecAssemblyEnd(f_petsc);
+}
+
+}  // namespace
+
 // 确保PETSc已在程序入口处初始化（用于BuildPPEMatrixPetsc）
 static bool EnsurePetscInitialized() {
   PetscBool initialized = PETSC_FALSE;
@@ -38,7 +159,9 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     double gravity_y,
     Mat& A_petsc,
     Vec& b_petsc,
-    std::vector<double>* velocity_divergence_out) {
+    std::vector<double>* velocity_divergence_out,
+    std::vector<double>* diagonal_abs_out,
+    std::vector<double>* rhs_abs_out) {
   
   // 确保PETSc已在程序入口处初始化
   if (!EnsurePetscInitialized()) {
@@ -83,17 +206,24 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   // 根据文档：拉普拉斯算子前的系数为 2 / (r_s^2)
   // 这里同时除以密度 density
   double coeff_factor = 2.0 / (smoothing_radius * smoothing_radius * density);
+
+  const double splash_ref_diag = ChooseSplashReferenceDiagonal(
+      fluid_particles, corrective_matrices_pressure, smoothing_radius,
+      coeff_factor);
   
   // 遍历所有流体粒子，构建系数矩阵和右边项
   for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
-    // 自由面粒子：使用行修改法，直接施加 p_i = 0
-    if (fluid_particles.surface_type[particle_idx] == SurfaceType::SURFACE) {
-      BuildSurfaceParticleRowAdjusted(
-          particle_idx, particle_spacing, density, A_petsc, b_petsc);
+    // 飞溅粒子：仅对角元（尺度与内部离散同阶）、非对角为零、右端项为零，使 p_i = 0
+    if (static_cast<size_t>(particle_idx) < fluid_particles.surface_type.size() &&
+        fluid_particles.surface_type[particle_idx] == SurfaceType::SPLASH) {
+      PetscInt row = static_cast<PetscInt>(particle_idx);
+      MatSetValue(A_petsc, row, row, splash_ref_diag, ADD_VALUES);
+      VecSetValue(b_petsc, row, 0.0, INSERT_VALUES);
+      if (velocity_divergence_out != nullptr) {
+        (*velocity_divergence_out)[particle_idx] = 0.0;
+      }
       continue;
     }
-
-    // 非自由面粒子：使用LSMPS离散方法
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
     double divergence_value = 0.0;
@@ -116,6 +246,148 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   VecAssemblyBegin(b_petsc);
   VecAssemblyEnd(b_petsc);
   
+  // 可选调试输出：提取 PPE 系数矩阵 A 的主对角线绝对值，以及源项向量 b 的绝对值
+  if (diagonal_abs_out != nullptr || rhs_abs_out != nullptr) {
+    if (diagonal_abs_out != nullptr) {
+      diagonal_abs_out->assign(num_fluid_particles, 0.0);
+    }
+    if (rhs_abs_out != nullptr) {
+      rhs_abs_out->assign(num_fluid_particles, 0.0);
+    }
+
+    // 提取对角线元素 |A_ii|
+    if (diagonal_abs_out != nullptr) {
+      for (int i = 0; i < num_fluid_particles; ++i) {
+        PetscInt row = static_cast<PetscInt>(i);
+        PetscInt col = static_cast<PetscInt>(i);
+        PetscScalar value = 0.0;
+        PetscErrorCode ierr = MatGetValues(A_petsc, 1, &row, 1, &col, &value);
+        if (ierr == 0) {
+          (*diagonal_abs_out)[i] = std::abs(static_cast<double>(value));
+        } else {
+          (*diagonal_abs_out)[i] = 0.0;
+        }
+      }
+    }
+
+    // 提取源项向量元素 |b_i|
+    if (rhs_abs_out != nullptr) {
+      std::vector<PetscInt> indices(num_fluid_particles);
+      std::vector<PetscScalar> values(num_fluid_particles);
+      for (int i = 0; i < num_fluid_particles; ++i) {
+        indices[i] = static_cast<PetscInt>(i);
+      }
+      PetscErrorCode ierr =
+          VecGetValues(b_petsc, num_fluid_particles, indices.data(), values.data());
+      if (ierr == 0) {
+        for (int i = 0; i < num_fluid_particles; ++i) {
+          (*rhs_abs_out)[i] = std::abs(static_cast<double>(values[i]));
+        }
+      } else {
+        // 失败则保持默认 0.0
+      }
+    }
+  }
+
+  return true;
+}
+
+bool PPEMatrixBuilder::BuildPPEPenaltyNormalEquationPetsc(
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_velocity,
+    const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_pressure,
+    double smoothing_radius,
+    double density,
+    double time_step,
+    double particle_spacing,
+    double gravity_x,
+    double gravity_y,
+    double penalty_mu,
+    Mat& K_petsc,
+    Vec& f_petsc,
+    std::vector<double>* velocity_divergence_out,
+    std::vector<double>* diagonal_abs_out,
+    std::vector<double>* rhs_abs_out) {
+  // 1) 先构建原始系统 A p = b（不对自由面行做行修改）
+  Mat A_petsc = NULL;
+  Vec b_petsc = NULL;
+  if (!BuildPPEMatrixPetsc(
+          fluid_particles, solid_particles,
+          corrective_matrices_velocity, corrective_matrices_pressure,
+          smoothing_radius, density, time_step, particle_spacing,
+          gravity_x, gravity_y,
+          A_petsc, b_petsc,
+          velocity_divergence_out, diagonal_abs_out, rhs_abs_out)) {
+    if (A_petsc != NULL) MatDestroy(&A_petsc);
+    if (b_petsc != NULL) VecDestroy(&b_petsc);
+    return false;
+  }
+
+  // 2) 计算 K = A^T A
+  if (K_petsc != NULL) {
+    MatDestroy(&K_petsc);
+    K_petsc = NULL;
+  }
+  PetscErrorCode ierr = MatTransposeMatMult(
+      A_petsc, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
+  if (ierr != 0 || K_petsc == NULL) {
+    std::cerr << "错误：构建 K = A^T A 失败" << std::endl;
+    if (A_petsc != NULL) MatDestroy(&A_petsc);
+    if (b_petsc != NULL) VecDestroy(&b_petsc);
+    if (K_petsc != NULL) MatDestroy(&K_petsc);
+    K_petsc = NULL;
+    return false;
+  }
+
+  // 3) 计算 f = A^T b
+  if (f_petsc == NULL) {
+    ierr = VecDuplicate(b_petsc, &f_petsc);
+    if (ierr != 0 || f_petsc == NULL) {
+      std::cerr << "错误：创建向量 f 失败" << std::endl;
+      MatDestroy(&A_petsc);
+      VecDestroy(&b_petsc);
+      MatDestroy(&K_petsc);
+      K_petsc = NULL;
+      return false;
+    }
+  } else {
+    VecSet(f_petsc, 0.0);
+  }
+  ierr = MatMultTranspose(A_petsc, b_petsc, f_petsc);
+  if (ierr != 0) {
+    std::cerr << "错误：构建 f = A^T b 失败" << std::endl;
+    MatDestroy(&A_petsc);
+    VecDestroy(&b_petsc);
+    MatDestroy(&K_petsc);
+    K_petsc = NULL;
+    VecDestroy(&f_petsc);
+    f_petsc = NULL;
+    return false;
+  }
+
+  // 4) 加入罚项 D（自由面粒子对角线加 penalty_mu）
+  if (penalty_mu > 0.0) {
+    const int n = fluid_particles.particle_num;
+    for (int i = 0; i < n; ++i) {
+      if (fluid_particles.surface_type[i] == SurfaceType::SURFACE) {
+        PetscInt row = static_cast<PetscInt>(i);
+        MatSetValue(K_petsc, row, row, penalty_mu, ADD_VALUES);
+      }
+    }
+  }
+
+  MatAssemblyBegin(K_petsc, MAT_FINAL_ASSEMBLY);
+  MatAssemblyEnd(K_petsc, MAT_FINAL_ASSEMBLY);
+  VecAssemblyBegin(f_petsc);
+  VecAssemblyEnd(f_petsc);
+
+  // 飞溅粒子：在正规方程上施加 p=0（A 中已隔离行不足以单独保证 K=A^T A 下 p_i=0）
+  ApplySplashDirichletOnPenaltySystem(K_petsc, f_petsc, fluid_particles);
+
+  // 5) 清理临时 A、b
+  MatDestroy(&A_petsc);
+  VecDestroy(&b_petsc);
   return true;
 }
 
@@ -240,23 +512,6 @@ void PPEMatrixBuilder::InitializePetscMatrixAndVector(
   } else {
     VecSet(b_petsc, 0.0);
   }
-}
-
-void PPEMatrixBuilder::BuildSurfaceParticleRowAdjusted(
-    int particle_idx,
-    double particle_spacing,
-    double density,
-    Mat& A_petsc,
-    Vec& b_petsc) const {
-  PetscInt row = static_cast<PetscInt>(particle_idx);
-
-  // 参考 `PPEadjust.md`：自由面粒子施加 p_i = 0
-  // 取 c 接近内部粒子对角线尺度：c = 1 / (Δx^2 ρ)
-  const double dx = (particle_spacing > 0.0) ? particle_spacing : 1e-12;
-  const double c = 1.0 / (dx * dx * density);
-
-  MatSetValue(A_petsc, row, row, c, INSERT_VALUES);
-  VecSetValue(b_petsc, row, 0.0, INSERT_VALUES);
 }
 
 void PPEMatrixBuilder::BuildInnerParticleRow(

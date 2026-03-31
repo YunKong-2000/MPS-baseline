@@ -10,10 +10,10 @@ int main(int argc, char* argv[]) {
   std::cout << "=== 生成静水问题算例（约2万粒子）===" << std::endl;
   
   // 几何参数
-  double container_width = 2.0;   // 容器宽度 (m)
+  double container_width = 1.0;   // 容器宽度 (m)
   double container_height = 2.0;  // 容器高度 (m)
   double water_height = 1.0;      // 水位高度 (m)
-  double particle_spacing = 0.01; // 粒子间距 (m)
+  double particle_spacing = 0.02; // 粒子间距 (m)
   
   // 如果通过命令行参数指定粒子间距
   if (argc > 1) {
@@ -27,7 +27,9 @@ int main(int argc, char* argv[]) {
   
   int nx_bottom = static_cast<int>(std::round(container_width / particle_spacing)) + 1;
   int ny_wall = static_cast<int>(std::round(container_height / particle_spacing)) + 1;
-  int num_solid = nx_bottom + 2 * ny_wall;
+  // 壁面当前由：底部一条直线 + 左右两条竖直边构成，为了保证矩形容器四角都有粒子，
+  // 下面在统计时会额外加入 4 个角点粒子
+  int num_solid = nx_bottom + 2 * ny_wall + 4;
   int total_particles = num_fluid + num_solid;
   
   std::cout << "\n几何参数:" << std::endl;
@@ -97,6 +99,47 @@ int main(int argc, char* argv[]) {
     double x = right_x;
     double y = j * particle_spacing;
     solid_out << x << " " << y << " 0.0 0.0 -1.0 0.0\n";
+  }
+
+  // 容器四角补点：
+  // 采用与相邻两条壁面法向量的平均作为角点法向量（再单位化），
+  // 使得角点在力学上更接近真实几何角。
+  const double inv_sqrt2 = 1.0 / std::sqrt(2.0);
+
+  // 左下角：由底部向上 (0,1) 与左壁向右 (1,0) 组成 -> (1,1)/sqrt(2)
+  {
+    double x = -particle_spacing;
+    double y = -particle_spacing;
+    double nx = 1.0 * inv_sqrt2;
+    double ny = 1.0 * inv_sqrt2;
+    solid_out << x << " " << y << " 0.0 0.0 " << nx << " " << ny << "\n";
+  }
+
+  // 右下角：底部向上 (0,1) 与右壁向左 (-1,0) 组成 -> (-1,1)/sqrt(2)
+  {
+    double x = container_width + particle_spacing;
+    double y = -particle_spacing;
+    double nx = -1.0 * inv_sqrt2;
+    double ny = 1.0 * inv_sqrt2;
+    solid_out << x << " " << y << " 0.0 0.0 " << nx << " " << ny << "\n";
+  }
+
+  // 左上角：假想顶部壁面向下 (0,-1) 与左壁向右 (1,0) -> (1,-1)/sqrt(2)
+  {
+    double x = -particle_spacing;
+    double y = container_height + particle_spacing;
+    double nx = 1.0 * inv_sqrt2;
+    double ny = -1.0 * inv_sqrt2;
+    solid_out << x << " " << y << " 0.0 0.0 " << nx << " " << ny << "\n";
+  }
+
+  // 右上角：假想顶部壁面向下 (0,-1) 与右壁向左 (-1,0) -> (-1,-1)/sqrt(2)
+  {
+    double x = container_width + particle_spacing;
+    double y = container_height + particle_spacing;
+    double nx = -1.0 * inv_sqrt2;
+    double ny = -1.0 * inv_sqrt2;
+    solid_out << x << " " << y << " 0.0 0.0 " << nx << " " << ny << "\n";
   }
   solid_out.close();
   std::cout << "已输出固体粒子文件: " << solid_file << std::endl;

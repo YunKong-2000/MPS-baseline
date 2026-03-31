@@ -101,12 +101,12 @@ private:
   static constexpr double SPLASH_DENSITY_RATIO = 0.3;  // 飞溅粒子密度阈值比例
   static constexpr double INNER_DENSITY_RATIO = 0.97;  // 内部粒子密度阈值比例（接近参考密度）
   static constexpr int MIN_NEIGHBOR_COUNT_FOR_INNER = 8;  // 最小邻域粒子数（用于粗筛）
-  static constexpr int MIN_NEIGHBOR_COUNT_FOR_SPLASH = 3;  // 最大邻域粒子数（用于粗筛飞溅粒子）
+  static constexpr int MIN_NEIGHBOR_COUNT_FOR_SPLASH = 4;  // 邻域粒子数 < 5 判为飞溅（粗筛）
   static constexpr double NEAR_SURFACE_DISTANCE_RATIO = 1.5;  // 近自由面距离比例（相对于粒子间距）
   
   // 虚拟光源法相关常量（2D版本使用圆形幕布）
   static constexpr int CIRCLE_GRID_RESOLUTION = 180;   // 圆形网格角度分辨率（0到2π）
-  static constexpr double SHADOW_AREA_THRESHOLD = 0.9;    // 阴影面积比例阈值（大于等于此值判定为内部粒子）
+  static constexpr double SHADOW_AREA_THRESHOLD = 0.92;   // 阴影面积比例阈值（shadow_ratio < 该值判为自由面）
   static constexpr double PARTICLE_RADIUS_RATIO = 0.5;  // 粒子半径相对于粒子间距的比例
 };
 

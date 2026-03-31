@@ -51,7 +51,36 @@ public:
       Mat& A_petsc,
       Vec& b_petsc,
       // 可选调试输出：每个流体粒子的临时速度散度（仅速度项，不含壁面压力项）
-      std::vector<double>* velocity_divergence_out = nullptr);
+      std::vector<double>* velocity_divergence_out = nullptr,
+      // 可选调试输出：PPE 系数矩阵 A 的主对角线绝对值 |A_ii|
+      std::vector<double>* diagonal_abs_out = nullptr,
+      // 可选调试输出：源项向量 b 的绝对值 |b_i|
+      std::vector<double>* rhs_abs_out = nullptr);
+
+  // 使用罚函数法构建正规方程：
+  //   K = A^T A + D, 其中 D_ii = penalty_mu (i为自由面粒子)，否则为0
+  //   f = A^T b
+  // 然后求解 K p = f
+  bool BuildPPEPenaltyNormalEquationPetsc(
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_velocity,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices_pressure,
+      double smoothing_radius,
+      double density,
+      double time_step,
+      double particle_spacing,
+      double gravity_x,
+      double gravity_y,
+      double penalty_mu,
+      Mat& K_petsc,
+      Vec& f_petsc,
+      // 可选调试输出：每个流体粒子的临时速度散度（仅速度项，不含壁面压力项）
+      std::vector<double>* velocity_divergence_out = nullptr,
+      // 可选调试输出：PPE 系数矩阵 A 的主对角线绝对值 |A_ii|
+      std::vector<double>* diagonal_abs_out = nullptr,
+      // 可选调试输出：源项向量 b 的绝对值 |b_i|
+      std::vector<double>* rhs_abs_out = nullptr);
 
   // 调试函数：将系数矩阵的对角线元素和右边项输出到VTK文件
   // 参数：
@@ -72,15 +101,6 @@ private:
   void InitializePetscMatrixAndVector(
       int num_particles,
       const std::vector<int>& nnz_per_row,
-      Mat& A_petsc,
-      Vec& b_petsc) const;
-  
-  // 构建自由面粒子的矩阵行和右边项（行修改法）
-  // 参考 `PPEadjust.md`：直接施加 p_i = 0（对角线为常数c，右端为0，其它项为0）
-  void BuildSurfaceParticleRowAdjusted(
-      int particle_idx,
-      double particle_spacing,
-      double density,
       Mat& A_petsc,
       Vec& b_petsc) const;
   
