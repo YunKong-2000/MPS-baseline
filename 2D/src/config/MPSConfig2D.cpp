@@ -29,6 +29,8 @@ bool MPSConfig2D::LoadFromConfig(const SimpleIni& config) {
                                                          simulation_config_.gravity_x);
     simulation_config_.gravity_y = config.GetDoubleValue("Simulation", "GravityY", 
                                                          simulation_config_.gravity_y);
+    simulation_config_.ppe_penalty_mu = config.GetDoubleValue("Simulation", "PPEPenaltyMu",
+                                                              simulation_config_.ppe_penalty_mu);
     
     // 加载时间步管理参数
     simulation_config_.min_time_step = config.GetDoubleValue("Simulation", "MinTimeStep", 
@@ -69,6 +71,9 @@ bool MPSConfig2D::Validate() const {
 
         // 验证动力学粘性系数
         CHECK_NON_NEGATIVE(simulation_config_.kinematic_viscosity, "动力学粘性系数 (KinematicViscosity)");
+        
+        // 验证PPE罚函数参数
+        CHECK_NON_NEGATIVE(simulation_config_.ppe_penalty_mu, "PPE罚函数系数 (PPEPenaltyMu)");
 
         // 验证粒子间距
         CHECK_POSITIVE(particle_config_.particle_spacing, "粒子间距 (ParticleSpacing)");

@@ -430,10 +430,12 @@ int main(int argc, char** argv) {
   PPEMatrixBuilder matrix_builder;
   Mat A_petsc = NULL;
   Vec b_petsc = NULL;
+  const double penalty_mu = 0.0;  // 使用默认罚参数尺度
   
   if (!matrix_builder.BuildPPEMatrixPetsc(
           fluid_particles, solid_particles, corrective_matrices_velocity, corrective_matrices_pressure,
-          smoothing_radius, rho0, time_step, particle_spacing, gravity_x, gravity_y, A_petsc, b_petsc)) {
+          smoothing_radius, rho0, time_step, particle_spacing, penalty_mu,
+          gravity_x, gravity_y, A_petsc, b_petsc)) {
     std::cerr << "错误：构建PPE矩阵失败" << std::endl;
     return 1;
   }
@@ -446,14 +448,14 @@ int main(int argc, char** argv) {
   std::cout << "  A矩阵大小: " << A_m << " x " << A_n << std::endl;
   std::cout << "  A矩阵非零元素数: " << A_nnz << std::endl;
   
-  // 求解PPE方程（直接求解 A·p = b）
-  std::cout << "\n求解PPE方程（直接求解 A·p = b）..." << std::endl;
+  // 求解PPE方程（罚函数法正规方程）
+  std::cout << "\n求解PPE方程（罚函数法正规方程）..." << std::endl;
   PPESolver::SolverConfig solver_config;
-  solver_config.solver_type = PPESolver::SolverType::BICGSTAB;
+  solver_config.solver_type = PPESolver::SolverType::CG;
   solver_config.max_iterations = 5000;
   solver_config.tolerance = 1e-6;
   solver_config.force_iterative = true;
-  solver_config.is_symmetric_positive_definite = false;
+  solver_config.is_symmetric_positive_definite = true;
   solver_config.restart = 30;
   
   PPESolver ppe_solver(solver_config);

@@ -26,6 +26,7 @@ public:
         double kinematic_viscosity = 0.001;   // 动力学粘性系数 (m²/s)
         double gravity_x = 0.0;               // 重力加速度 X方向 (m/s²)
         double gravity_y = -9.8;              // 重力加速度 Y方向 (m/s²)
+        double ppe_penalty_mu = 0.0;          // PPE罚函数系数μ（<=0时使用程序默认尺度）
         
         // 时间步管理参数
         double min_time_step = 1e-6;          // 最小时间步 (s)

@@ -34,6 +34,7 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     double density,
     double time_step,
     double particle_spacing,
+    double penalty_mu,
     double gravity_x,
     double gravity_y,
     Mat& A_petsc,
@@ -84,16 +85,9 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   // 这里同时除以密度 density
   double coeff_factor = 2.0 / (smoothing_radius * smoothing_radius * density);
   
-  // 遍历所有流体粒子，构建系数矩阵和右边项
+  // 遍历所有流体粒子，构建原始离散系统 A p = b
+  // 罚函数方法随后会转换为正规方程：(A^T A + D) p = A^T b
   for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
-    // 自由面粒子：使用行修改法，直接施加 p_i = 0
-    if (fluid_particles.surface_type[particle_idx] == SurfaceType::SURFACE) {
-      BuildSurfaceParticleRowAdjusted(
-          particle_idx, particle_spacing, density, A_petsc, b_petsc);
-      continue;
-    }
-
-    // 非自由面粒子：使用LSMPS离散方法
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
     double divergence_value = 0.0;
@@ -115,6 +109,59 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   
   VecAssemblyBegin(b_petsc);
   VecAssemblyEnd(b_petsc);
+
+  // 构造正规方程：K = A^T A，f = A^T b
+  Mat K_petsc = NULL;
+  Vec f_petsc = NULL;
+  PetscErrorCode ierr = MatTransposeMatMult(
+      A_petsc, A_petsc, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &K_petsc);
+  if (ierr != 0 || K_petsc == NULL) {
+    std::cerr << "错误：构造正规方程矩阵 A^T A 失败" << std::endl;
+    return false;
+  }
+
+  ierr = VecDuplicate(b_petsc, &f_petsc);
+  if (ierr != 0 || f_petsc == NULL) {
+    std::cerr << "错误：创建正规方程右端向量失败" << std::endl;
+    MatDestroy(&K_petsc);
+    return false;
+  }
+  ierr = MatMultTranspose(A_petsc, b_petsc, f_petsc);
+  if (ierr != 0) {
+    std::cerr << "错误：构造正规方程右端项 A^T b 失败" << std::endl;
+    VecDestroy(&f_petsc);
+    MatDestroy(&K_petsc);
+    return false;
+  }
+
+  // 添加罚函数对角矩阵 D（仅自由面粒子）
+  double penalty_mu_safe = penalty_mu;
+  if (penalty_mu_safe <= 0.0) {
+    const double dx = (particle_spacing > 0.0) ? particle_spacing : 1e-12;
+    // 使用与PPE主对角同量纲的默认尺度，避免参数缺失时约束过弱
+    penalty_mu_safe = 100.0 / (dx * dx * density);
+  }
+  for (int i = 0; i < num_fluid_particles; ++i) {
+    if (fluid_particles.surface_type[i] != SurfaceType::SURFACE) {
+      continue;
+    }
+    const PetscInt idx = static_cast<PetscInt>(i);
+    MatSetValue(K_petsc, idx, idx, penalty_mu_safe, ADD_VALUES);
+  }
+  MatAssemblyBegin(K_petsc, MAT_FINAL_ASSEMBLY);
+  MatAssemblyEnd(K_petsc, MAT_FINAL_ASSEMBLY);
+  VecAssemblyBegin(f_petsc);
+  VecAssemblyEnd(f_petsc);
+
+  // 释放原始系统对象，输出正规方程系统
+  if (A_petsc != NULL) {
+    MatDestroy(&A_petsc);
+  }
+  if (b_petsc != NULL) {
+    VecDestroy(&b_petsc);
+  }
+  A_petsc = K_petsc;
+  b_petsc = f_petsc;
   
   return true;
 }

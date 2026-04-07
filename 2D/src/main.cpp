@@ -162,6 +162,8 @@ int main(int argc, char* argv[]) {
     std::cout << "[调试] 最终使用的总仿真时间: " << sim_config.total_time << " s" << std::endl;
     std::cout << "  密度: " << sim_config.density << " kg/m³" << std::endl;
     std::cout << "  平滑半径: " << particle_config.smoothing_radius << " m" << std::endl;
+    std::cout << "  PPE罚函数系数(mu): " << sim_config.ppe_penalty_mu
+              << " (<=0 使用默认尺度)" << std::endl;
     
     // ========== 步骤2：读取前处理文件 ==========
     std::cout << "\n========== 步骤2：读取前处理文件 ==========" << std::endl;
@@ -332,13 +334,14 @@ int main(int argc, char* argv[]) {
     Correction correction;
     
     // PPE求解器配置
-    // 直接求解 Ap = b（自由面粒子采用行修改法施加 p_i = 0）
+    // 罚函数法会将原始系统转换为正规方程：
+    // (A^T A + D) p = A^T b，矩阵为对称正定（在常见条件下）
     PPESolver::SolverConfig solver_config;
-    solver_config.solver_type = PPESolver::SolverType::BICGSTAB;  // 推荐用于非对称矩阵
+    solver_config.solver_type = PPESolver::SolverType::CG;
     solver_config.max_iterations = 10000;  // 最大迭代次数
     solver_config.tolerance = 1e-6;  // 容差
     solver_config.force_iterative = true;  // 强制使用迭代求解器
-    solver_config.is_symmetric_positive_definite = false;
+    solver_config.is_symmetric_positive_definite = true;
     solver_config.restart = 30;  // GMRES重启参数（仅GMRES有效）
     ppe_solver.SetConfig(solver_config);
     
@@ -661,6 +664,7 @@ int main(int argc, char* argv[]) {
               sim_config.density,
               time_step,
               particle_config.particle_spacing,
+              sim_config.ppe_penalty_mu,
               sim_config.gravity_x, sim_config.gravity_y,
               A_petsc, b_petsc,
               &velocity_divergence);

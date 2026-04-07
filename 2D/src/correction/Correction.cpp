@@ -318,7 +318,7 @@ double2 Correction::ComputePressureGradient(
     surface_type = fluid_particles.surface_type[particle_idx];
   }
 
-  // 仅近自由面粒子使用 type-B，其余粒子使用原有 type-A
+  // 仅近自由面粒子使用 type-B，其余粒子（含自由面）使用 type-A
   if (surface_type == SurfaceType::NEAR_SURFACE) {
     return ComputePressureGradientTypeBImpl(
         particle_idx, fluid_particles, solid_particles,

@@ -30,7 +30,8 @@ public:
   //   smoothing_radius: 平滑半径（r_e）
   //   density: 流体密度（ρ）
   //   time_step: 时间步长（Δt）
-  //   particle_spacing: 粒子初始间距（l_0，已废弃，保留用于接口兼容性）
+  //   particle_spacing: 粒子初始间距（l_0，用于默认罚参数尺度）
+  //   penalty_mu: 罚函数系数 μ（自由面约束项强度）
   //   gravity_x: 重力加速度x分量（用于壁面压力边界条件）
   //   gravity_y: 重力加速度y分量（用于壁面压力边界条件）
   //   A_petsc: 输出的PETSc系数矩阵（必须在调用前初始化为NULL或已创建的Mat对象）
@@ -46,6 +47,7 @@ public:
       double density,
       double time_step,
       double particle_spacing,
+      double penalty_mu,
       double gravity_x,
       double gravity_y,
       Mat& A_petsc,
