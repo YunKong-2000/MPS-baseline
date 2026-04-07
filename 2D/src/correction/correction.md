@@ -26,7 +26,7 @@ $$
 $$
 
 ## 对应程序模块的实现
-1、使用当前速度$\mathbf{u}^k$求解临时速度$\mathbf{u}^*$
+1、使用当前速度$\mathbf{u}^k$求解临时速度$\mathbf{u}^*$  
 2、correction中应当首先完成临时速度$\mathbf{u}^{**}$及其速度梯度的计算，由于correction之前是没有更新位置的，所以可以直接使用PPEbuild模块中的速度对应的lsmps矩矩阵进行梯度的计算。  
 3、速度$\mathbf{u}^{**}$计算完后，调用PS算法，计算出shifting位移矢量$\delta \mathbf{r}$。  
 4、correction模块此时再去计算整体位移$\mathbf{\Delta r}$，并完成位置的更新。  

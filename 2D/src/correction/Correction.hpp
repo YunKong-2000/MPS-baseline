@@ -19,6 +19,13 @@ namespace mps2D {
 // 3. 根据算得的加速度和时间步长更新粒子速度和位置
 class Correction {
 public:
+  struct VelocityGradient2D {
+    double du_dx;
+    double du_dy;
+    double dv_dx;
+    double dv_dy;
+  };
+
   Correction() = default;
   ~Correction() = default;
 
@@ -64,6 +71,15 @@ public:
       const double2& acceleration,
       double time_step);
 
+  // 计算单个粒子的速度梯度（基于给定速度场）
+  VelocityGradient2D ComputeVelocityGradient(
+      int particle_idx,
+      const std::vector<double2>& velocity_field,
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>& corrective_matrix,
+      double smoothing_radius);
+
   // 批量计算并更新所有粒子的速度和位置
   // 参数：
   //   fluid_particles: 流体粒子对象（会被修改）
@@ -83,6 +99,18 @@ public:
       double gravity_y,
       double density,
       double time_step);
+
+  // 与上面接口一致，但显式提供 u^k（显式步之前的速度）
+  void ComputeAndUpdateAllParticles(
+      FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+      double smoothing_radius,
+      double gravity_x,
+      double gravity_y,
+      double density,
+      double time_step,
+      const std::vector<double2>& velocity_at_step_k);
 
   // 批量计算并更新所有粒子的速度和位置，同时保存压力梯度（在更新位置之前）
   // 参数：
@@ -104,6 +132,19 @@ public:
       double gravity_y,
       double density,
       double time_step,
+      std::vector<double2>& pressure_gradients);
+
+  // 与上面接口一致，但显式提供 u^k（显式步之前的速度）
+  void ComputeAndUpdateAllParticles(
+      FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
+      double smoothing_radius,
+      double gravity_x,
+      double gravity_y,
+      double density,
+      double time_step,
+      const std::vector<double2>& velocity_at_step_k,
       std::vector<double2>& pressure_gradients);
 };
 

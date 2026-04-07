@@ -467,6 +467,8 @@ int main(int argc, char* argv[]) {
         if (should_output_detail) {
           std::cout << "  [步骤4/8] 显式更新模块：计算粘性力和重力，更新临时速度..." << std::flush;
         }
+        // 保存 u^k（显式更新前速度），供 correction 的位移积分使用。
+        std::vector<double2> velocity_step_k = fluid_particles.velocity;
         // 用于保存显式更新后的速度（临时速度）
         std::vector<double2> velocity_explicit(num_fluid);
         // 用于保存粘性力加速度（从explicit_force模块中获取）
@@ -779,6 +781,7 @@ int main(int argc, char* argv[]) {
               sim_config.gravity_x, sim_config.gravity_y,
               sim_config.density,
               time_step,
+              velocity_step_k,
               pressure_gradients_for_output);  // 保存压力梯度
           
           if (should_output_detail) {
