@@ -86,6 +86,7 @@ public:
   //   solid_particles: 固体粒子对象
   //   corrective_matrices: 所有粒子的corrective matrix（使用第二类边界条件计算得到）
   //   smoothing_radius: 平滑半径
+  //   particle_spacing: 粒子间距
   //   gravity_x: 重力加速度x分量
   //   gravity_y: 重力加速度y分量
   //   density: 流体密度
@@ -95,6 +96,7 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double gravity_x,
       double gravity_y,
       double density,
@@ -106,6 +108,7 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double gravity_x,
       double gravity_y,
       double density,
@@ -118,6 +121,7 @@ public:
   //   solid_particles: 固体粒子对象
   //   corrective_matrices: 所有粒子的corrective matrix（使用第二类边界条件计算得到）
   //   smoothing_radius: 平滑半径
+  //   particle_spacing: 粒子间距
   //   gravity_x: 重力加速度x分量
   //   gravity_y: 重力加速度y分量
   //   density: 流体密度
@@ -128,6 +132,7 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double gravity_x,
       double gravity_y,
       double density,
@@ -140,6 +145,7 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double gravity_x,
       double gravity_y,
       double density,

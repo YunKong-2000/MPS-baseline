@@ -1,5 +1,6 @@
 #include "Correction.hpp"
 #include "../lsmps/CorrectiveMatrix.hpp"
+#include "../particle_shifting/ParticleShifting.hpp"
 #include <cmath>
 #include <iostream>
 
@@ -300,11 +301,6 @@ double2 ComputePressureGradientTypeBImpl(
   return {grad_x, grad_y};
 }
 
-// 占位实现：当前未接入独立PS模块，返回零shifting位移。
-std::vector<double2> ComputeShiftingDisplacementPlaceholder(int num_particles) {
-  return std::vector<double2>(num_particles, {0.0, 0.0});
-}
-
 }  // namespace
 
 double2 Correction::ComputePressureGradient(
@@ -451,6 +447,7 @@ void Correction::ComputeAndUpdateAllParticles(
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double gravity_x,
     double gravity_y,
     double density,
@@ -460,7 +457,7 @@ void Correction::ComputeAndUpdateAllParticles(
   std::vector<double2> pressure_gradients;
   ComputeAndUpdateAllParticles(
       fluid_particles, solid_particles, corrective_matrices,
-      smoothing_radius, gravity_x, gravity_y, density, time_step,
+      smoothing_radius, particle_spacing, gravity_x, gravity_y, density, time_step,
       velocity_at_step_k, pressure_gradients);
 }
 
@@ -469,6 +466,7 @@ void Correction::ComputeAndUpdateAllParticles(
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double gravity_x,
     double gravity_y,
     double density,
@@ -477,7 +475,7 @@ void Correction::ComputeAndUpdateAllParticles(
   std::vector<double2> pressure_gradients;
   ComputeAndUpdateAllParticles(
       fluid_particles, solid_particles, corrective_matrices,
-      smoothing_radius, gravity_x, gravity_y, density, time_step,
+      smoothing_radius, particle_spacing, gravity_x, gravity_y, density, time_step,
       velocity_at_step_k, pressure_gradients);
 }
 
@@ -486,6 +484,7 @@ void Correction::ComputeAndUpdateAllParticles(
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double gravity_x,
     double gravity_y,
     double density,
@@ -494,7 +493,7 @@ void Correction::ComputeAndUpdateAllParticles(
   const std::vector<double2> velocity_at_step_k = fluid_particles.velocity;
   ComputeAndUpdateAllParticles(
       fluid_particles, solid_particles, corrective_matrices,
-      smoothing_radius, gravity_x, gravity_y, density, time_step,
+      smoothing_radius, particle_spacing, gravity_x, gravity_y, density, time_step,
       velocity_at_step_k, pressure_gradients);
 }
 
@@ -503,6 +502,7 @@ void Correction::ComputeAndUpdateAllParticles(
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double gravity_x,
     double gravity_y,
     double density,
@@ -561,9 +561,14 @@ void Correction::ComputeAndUpdateAllParticles(
         smoothing_radius);
   }
 
-  // 同步阶段4：调用PS位移（当前占位为零位移），并计算总位移 Δr
+  // 同步阶段4：计算PS位移，并计算总位移 Δr
   const std::vector<double2> shifting_displacement =
-      ComputeShiftingDisplacementPlaceholder(num_particles);
+      ParticleShifting::ComputeShiftingDisplacement(
+          fluid_particles,
+          solid_particles,
+          velocity_after_pressure,
+          smoothing_radius,
+          particle_spacing);
   std::vector<double2> total_displacement(num_particles);
   for (int i = 0; i < num_particles; ++i) {
     total_displacement[i] = {

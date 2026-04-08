@@ -778,6 +778,7 @@ int main(int argc, char* argv[]) {
               fluid_particles, solid_particles,
               corrective_matrices_ppe_pressure,  // 使用第二类边界条件的corrective matrix
               particle_config.smoothing_radius,
+              particle_config.particle_spacing,
               sim_config.gravity_x, sim_config.gravity_y,
               sim_config.density,
               time_step,
