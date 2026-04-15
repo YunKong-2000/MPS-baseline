@@ -80,6 +80,7 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double kinematic_viscosity,
       double gravity_x,
       double gravity_y,
@@ -102,11 +103,38 @@ public:
       const SolidParticle& solid_particles,
       const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
       double smoothing_radius,
+      double particle_spacing,
       double kinematic_viscosity,
       double gravity_x,
       double gravity_y,
       double time_step,
       std::vector<double2>& viscous_acceleration);
+
+  // 批量计算并更新所有粒子的速度（只更新速度，不更新位置），
+  // 同时返回粘性力加速度与飞溅粒子排斥加速度
+  // 参数：
+  //   splash_repulsive_acceleration: 输出参数，保存每个粒子的排斥加速度；
+  //                                 非飞溅粒子写为零向量
+  void ComputeAndUpdateVelocity(
+      FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
+      double smoothing_radius,
+      double particle_spacing,
+      double kinematic_viscosity,
+      double gravity_x,
+      double gravity_y,
+      double time_step,
+      std::vector<double2>& viscous_acceleration,
+      std::vector<double2>& splash_repulsive_acceleration);
+
+private:
+  // 根据飞溅粒子与壁面粒子的距离，计算弹性排斥加速度修正
+  double2 ComputeSplashRepulsiveAcceleration(
+      int particle_idx,
+      const FluidParticle& fluid_particles,
+      const SolidParticle& solid_particles,
+      double particle_spacing) const;
 
 };
 

@@ -473,16 +473,20 @@ int main(int argc, char* argv[]) {
         std::vector<double2> velocity_explicit(num_fluid);
         // 用于保存粘性力加速度（从explicit_force模块中获取）
         std::vector<double2> viscous_acceleration(num_fluid);
+        // 用于保存飞溅粒子排斥加速度（非飞溅粒子为零向量）
+        std::vector<double2> splash_repulsive_acceleration(num_fluid);
         try {
-          // 使用重载方法，直接获取explicit_force模块计算出的粘性力加速度
+          // 使用重载方法，获取粘性力加速度和飞溅粒子排斥加速度
           explicit_force.ComputeAndUpdateVelocity(
               fluid_particles, solid_particles,
               corrective_matrices_explicit,
               particle_config.smoothing_radius,
+              particle_config.particle_spacing,
               sim_config.kinematic_viscosity,
               sim_config.gravity_x, sim_config.gravity_y,
               time_step,
-              viscous_acceleration);
+              viscous_acceleration,
+              splash_repulsive_acceleration);
           
           // 保存显式更新后的速度
           for (int i = 0; i < num_fluid; ++i) {
@@ -862,8 +866,12 @@ int main(int argc, char* argv[]) {
               }
               file_operator.appendVTKScalar(output_file, "surface_type", surface_type_int);
               
-              // 追加粘性力向量（vector格式）- 使用explicit_force模块计算出的粘性力加速度
-              file_operator.appendVTKVector(output_file, "viscous_force", viscous_acceleration);
+              // 追加飞溅粒子排斥加速度向量（vector格式）
+              // 非飞溅粒子对应零向量
+              file_operator.appendVTKVector(
+                  output_file,
+                  "splash_repulsive_acceleration",
+                  splash_repulsive_acceleration);
               
               // 追加原始 PPE 矩阵 A 的对角线系数
               if (file_operator.appendVTKScalar(output_file, "A_diagonal", A_diagonal)) {

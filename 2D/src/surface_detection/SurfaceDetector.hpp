@@ -64,15 +64,12 @@ private:
   // 粗筛：判定飞溅粒子和内部粒子
   // 参数：
   //   particle_idx: 粒子索引
-  //   number_density: 粒子数密度
-  //   reference_density: 参考粒子数密度
-  //   neighbor_count: 邻域粒子总数
-  // 返回：true表示已判定（飞溅或内部），false表示需要细筛
+  //   fluid_particles: 流体粒子对象
+  //   smoothing_radius: 平滑半径
+  // 返回：true表示已判定为飞溅粒子，false表示需要细筛
   bool CoarseScreening(int particle_idx,
-                      double number_density,
-                      double reference_density,
-                      int neighbor_count,
-                      FluidParticle& fluid_particles) const;
+                      FluidParticle& fluid_particles,
+                      const double smoothing_radius) const;
 
   // 细筛：使用虚拟光源法判定自由面粒子
   // 参数：
@@ -98,10 +95,7 @@ private:
                              const double particle_spacing) const;
 
   // 常量定义（避免魔法数字）
-  static constexpr double SPLASH_DENSITY_RATIO = 0.3;  // 飞溅粒子密度阈值比例
-  static constexpr double INNER_DENSITY_RATIO = 0.97;  // 内部粒子密度阈值比例（接近参考密度）
-  static constexpr int MIN_NEIGHBOR_COUNT_FOR_INNER = 8;  // 最小邻域粒子数（用于粗筛）
-  static constexpr int MIN_NEIGHBOR_COUNT_FOR_SPLASH = 3;  // 最大邻域粒子数（用于粗筛飞溅粒子）
+  static constexpr int MIN_FLUID_NEIGHBOR_COUNT_FOR_SPLASH = 5;  // 流体邻域粒子数阈值（小于该值判定为飞溅）
   static constexpr double NEAR_SURFACE_DISTANCE_RATIO = 1.5;  // 近自由面距离比例（相对于粒子间距）
   
   // 虚拟光源法相关常量（2D版本使用圆形幕布）

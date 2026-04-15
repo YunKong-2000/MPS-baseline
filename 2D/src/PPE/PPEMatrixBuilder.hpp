@@ -85,6 +85,13 @@ private:
       double density,
       Mat& A_petsc,
       Vec& b_petsc) const;
+
+  // 构建飞溅粒子的矩阵行和右边项（行修改法）
+  // 按约束形式设置：A_ii = 1，A_ij(i!=j)=0，b_i=0
+  void BuildSplashParticleRowAdjusted(
+      int particle_idx,
+      Mat& A_petsc,
+      Vec& b_petsc) const;
   
   // 构建内部粒子的矩阵行和右边项
   // corrective_matrix_velocity: 用于速度散度计算（第一类边界条件，考虑壁面粒子）

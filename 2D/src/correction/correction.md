@@ -20,15 +20,21 @@ $$
 其中$\delta r$是PS算法计算出的shifting位移。
 
 4、最终更新速度
-再得到了位移量$\mathbf{\Delta r}$后最后根据计算出的速度梯度$\nabla \mathbf{u}^{**}$去插值得出新位置上的速度$\mathbf{u}^{k+1}$,
+速度更新前，添加速度平滑处理，每个粒子速度更新时考虑周围粒子的平均速度。
+计算粒子邻域内邻域粒子的平均速度$\mathbf{\hat{u}}$，
 $$
-\mathbf{u}^{k+1} = \mathbf{u}^{**} + \Delta \mathbf{r} \cdot \nabla \mathbf{u}^{**}
+\mathbf{\hat{u}} = \frac{\sum_{j \neq i}\mathbf{u}_jw_{ij}}{\sum_{j \neq i}w_{ij}}
 $$
+计算完$\mathbf{\hat{u}}$再更新下一时间步速度
+$$
+\mathbf{u}^{k+1} = (1 - \lambda)\mathbf{u}^{**} + \lambda\mathbf{\hat{u}}
+$$
+其中$\lambda$为平滑系数，设置为0.1
 
 ## 对应程序模块的实现
 1、使用当前速度$\mathbf{u}^k$求解临时速度$\mathbf{u}^*$  
 2、correction中应当首先完成临时速度$\mathbf{u}^{**}$及其速度梯度的计算，由于correction之前是没有更新位置的，所以可以直接使用PPEbuild模块中的速度对应的lsmps矩矩阵进行梯度的计算。  
 3、速度$\mathbf{u}^{**}$计算完后，调用PS算法，计算出shifting位移矢量$\delta \mathbf{r}$。  
 4、correction模块此时再去计算整体位移$\mathbf{\Delta r}$，并完成位置的更新。  
-5、最后correction模块通过插值计算下一时间步的速度$\mathbf{u}^{k+1}$，完成速度的更新。
+5、最后correction模块通过计算下一时间步的速度$\mathbf{u}^{k+1}$，完成速度的更新。
 

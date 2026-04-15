@@ -88,6 +88,13 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   // 遍历所有流体粒子，构建原始离散系统 A p = b
   // 罚函数方法随后会转换为正规方程：(A^T A + D) p = A^T b
   for (int particle_idx = 0; particle_idx < num_fluid_particles; ++particle_idx) {
+    if (fluid_particles.surface_type[particle_idx] == SurfaceType::SPLASH) {
+      BuildSplashParticleRowAdjusted(particle_idx, A_petsc, b_petsc);
+      if (velocity_divergence_out != nullptr) {
+        (*velocity_divergence_out)[particle_idx] = 0.0;
+      }
+      continue;
+    }
     // 速度散度使用第一类边界条件的corrective matrix
     // 压力拉普拉斯算子使用第二类边界条件的corrective matrix
     double divergence_value = 0.0;
@@ -134,7 +141,7 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     return false;
   }
 
-  // 添加罚函数对角矩阵 D（仅自由面粒子）
+  // 添加罚函数对角矩阵 D（自由面与飞溅粒子）
   double penalty_mu_safe = penalty_mu;
   if (penalty_mu_safe <= 0.0) {
     const double dx = (particle_spacing > 0.0) ? particle_spacing : 1e-12;
@@ -142,7 +149,8 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
     penalty_mu_safe = 100.0 / (dx * dx * density);
   }
   for (int i = 0; i < num_fluid_particles; ++i) {
-    if (fluid_particles.surface_type[i] != SurfaceType::SURFACE) {
+    const SurfaceType type = fluid_particles.surface_type[i];
+    if (type != SurfaceType::SURFACE && type != SurfaceType::SPLASH) {
       continue;
     }
     const PetscInt idx = static_cast<PetscInt>(i);
@@ -303,6 +311,15 @@ void PPEMatrixBuilder::BuildSurfaceParticleRowAdjusted(
   const double c = 1.0 / (dx * dx * density);
 
   MatSetValue(A_petsc, row, row, c, INSERT_VALUES);
+  VecSetValue(b_petsc, row, 0.0, INSERT_VALUES);
+}
+
+void PPEMatrixBuilder::BuildSplashParticleRowAdjusted(
+    int particle_idx,
+    Mat& A_petsc,
+    Vec& b_petsc) const {
+  const PetscInt row = static_cast<PetscInt>(particle_idx);
+  MatSetValue(A_petsc, row, row, 1.0, INSERT_VALUES);
   VecSetValue(b_petsc, row, 0.0, INSERT_VALUES);
 }
 

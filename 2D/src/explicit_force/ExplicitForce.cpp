@@ -3,6 +3,12 @@
 
 namespace mps2D {
 
+namespace {
+constexpr double kSplashRepulsionCoeff = 20.0;
+constexpr double kSplashSafetyDistanceRatio = 0.9;
+constexpr double kSmallEps = 1e-10;
+}  // namespace
+
 double2 ExplicitForce::ComputeVelocityLaplacian(
     int particle_idx,
     const std::vector<double2>& velocity_field,
@@ -114,15 +120,10 @@ void ExplicitForce::UpdateVelocity(
     const double2& viscous_acceleration,
     const double2& gravity_acceleration,
     double time_step) {
-  
   // 总加速度 = 粘性力加速度 + 重力加速度
-  // double2 total_acceleration = {
-  //     viscous_acceleration.x + gravity_acceleration.x,
-  //     viscous_acceleration.y + gravity_acceleration.y
-  // };
   double2 total_acceleration = {
-      gravity_acceleration.x,
-      gravity_acceleration.y
+      viscous_acceleration.x + gravity_acceleration.x,
+      viscous_acceleration.y + gravity_acceleration.y
   };
   
   // 显式时间积分：只更新速度作为临时速度，不更新位置
@@ -132,11 +133,72 @@ void ExplicitForce::UpdateVelocity(
   velocity.y += total_acceleration.y * time_step;
 }
 
+double2 ExplicitForce::ComputeSplashRepulsiveAcceleration(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    double particle_spacing) const {
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.particle_num) ||
+      particle_idx >= static_cast<int>(fluid_particles.surface_type.size()) ||
+      particle_idx >= static_cast<int>(fluid_particles.solid_neighbour_list.size()) ||
+      fluid_particles.surface_type[particle_idx] != SurfaceType::SPLASH ||
+      particle_spacing <= kSmallEps) {
+    return {0.0, 0.0};
+  }
+
+  const double safety_distance = kSplashSafetyDistanceRatio * particle_spacing;
+  if (safety_distance <= kSmallEps) {
+    return {0.0, 0.0};
+  }
+
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  double2 repulsive_acceleration = {0.0, 0.0};
+
+  for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+    if (j < 0 ||
+        j >= static_cast<int>(solid_particles.position.size()) ||
+        j >= static_cast<int>(solid_particles.normal_vector.size())) {
+      continue;
+    }
+
+    const double2& pos_j = solid_particles.position[j];
+    const double dist = ComputeDistance(pos_i, pos_j);
+    if (dist <= kSmallEps || dist >= safety_distance) {
+      continue;
+    }
+
+    double2 normal = solid_particles.normal_vector[j];
+    const double normal_norm =
+        std::sqrt(normal.x * normal.x + normal.y * normal.y);
+    if (normal_norm > kSmallEps) {
+      normal.x /= normal_norm;
+      normal.y /= normal_norm;
+    } else {
+      const double dx = pos_i.x - pos_j.x;
+      const double dy = pos_i.y - pos_j.y;
+      const double fallback_norm = std::sqrt(dx * dx + dy * dy);
+      if (fallback_norm <= kSmallEps) {
+        continue;
+      }
+      normal = {dx / fallback_norm, dy / fallback_norm};
+    }
+
+    const double strength =
+        kSplashRepulsionCoeff * (safety_distance - dist) / safety_distance;
+    repulsive_acceleration.x += strength * normal.x;
+    repulsive_acceleration.y += strength * normal.y;
+  }
+
+  return repulsive_acceleration;
+}
+
 void ExplicitForce::ComputeAndUpdateVelocity(
     FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double kinematic_viscosity,
     double gravity_x,
     double gravity_y,
@@ -150,6 +212,11 @@ void ExplicitForce::ComputeAndUpdateVelocity(
   // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
   std::vector<double2> viscous_accelerations(num_particles);
   for (int i = 0; i < num_particles; ++i) {
+    if (i < static_cast<int>(fluid_particles.surface_type.size()) &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      viscous_accelerations[i] = {0.0, 0.0};
+      continue;
+    }
     // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
     double2 velocity_laplacian = ComputeVelocityLaplacian(
         i,
@@ -167,10 +234,16 @@ void ExplicitForce::ComputeAndUpdateVelocity(
   
   // 第二步：统一更新所有粒子的速度（不更新位置）
   for (int i = 0; i < num_particles; ++i) {
+    double2 non_pressure_acceleration = viscous_accelerations[i];
+    if (i < static_cast<int>(fluid_particles.surface_type.size()) &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      non_pressure_acceleration = ComputeSplashRepulsiveAcceleration(
+          i, fluid_particles, solid_particles, particle_spacing);
+    }
     UpdateVelocity(
         i,
         fluid_particles,
-        viscous_accelerations[i],
+        non_pressure_acceleration,
         gravity_acceleration,
         time_step);
   }
@@ -181,22 +254,55 @@ void ExplicitForce::ComputeAndUpdateVelocity(
     const SolidParticle& solid_particles,
     const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
     double smoothing_radius,
+    double particle_spacing,
     double kinematic_viscosity,
     double gravity_x,
     double gravity_y,
     double time_step,
     std::vector<double2>& viscous_acceleration) {
-  
+  std::vector<double2> splash_repulsive_acceleration;
+  ComputeAndUpdateVelocity(
+      fluid_particles,
+      solid_particles,
+      corrective_matrices,
+      smoothing_radius,
+      particle_spacing,
+      kinematic_viscosity,
+      gravity_x,
+      gravity_y,
+      time_step,
+      viscous_acceleration,
+      splash_repulsive_acceleration);
+}
+
+void ExplicitForce::ComputeAndUpdateVelocity(
+    FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const std::vector<Eigen::Matrix<double, 5, 5>>& corrective_matrices,
+    double smoothing_radius,
+    double particle_spacing,
+    double kinematic_viscosity,
+    double gravity_x,
+    double gravity_y,
+    double time_step,
+    std::vector<double2>& viscous_acceleration,
+    std::vector<double2>& splash_repulsive_acceleration) {
   int num_particles = fluid_particles.particle_num;
   
   // 确保输出向量大小正确
   viscous_acceleration.resize(num_particles);
+  splash_repulsive_acceleration.resize(num_particles);
   
   // 计算重力加速度（对所有粒子相同）
   double2 gravity_acceleration = ComputeGravityAcceleration(gravity_x, gravity_y);
   
   // 第一步：先计算所有粒子的速度拉普拉斯算子和粘性力加速度（使用原始速度）
   for (int i = 0; i < num_particles; ++i) {
+    if (i < static_cast<int>(fluid_particles.surface_type.size()) &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      viscous_acceleration[i] = {0.0, 0.0};
+      continue;
+    }
     // 计算速度拉普拉斯算子（此时所有粒子的速度都还是原始值）
     double2 velocity_laplacian = ComputeVelocityLaplacian(
         i,
@@ -214,10 +320,18 @@ void ExplicitForce::ComputeAndUpdateVelocity(
   
   // 第二步：统一更新所有粒子的速度（不更新位置）
   for (int i = 0; i < num_particles; ++i) {
+    splash_repulsive_acceleration[i] = {0.0, 0.0};
+    double2 non_pressure_acceleration = viscous_acceleration[i];
+    if (i < static_cast<int>(fluid_particles.surface_type.size()) &&
+        fluid_particles.surface_type[i] == SurfaceType::SPLASH) {
+      splash_repulsive_acceleration[i] = ComputeSplashRepulsiveAcceleration(
+          i, fluid_particles, solid_particles, particle_spacing);
+      non_pressure_acceleration = splash_repulsive_acceleration[i];
+    }
     UpdateVelocity(
         i,
         fluid_particles,
-        viscous_acceleration[i],
+        non_pressure_acceleration,
         gravity_acceleration,
         time_step);
   }

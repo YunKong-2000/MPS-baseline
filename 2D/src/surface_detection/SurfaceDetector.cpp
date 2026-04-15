@@ -16,39 +16,22 @@ void SurfaceDetector::DetectSurfaceParticles(
     return;
   }
 
-  // 步骤1：计算所有粒子的粒子数密度
-  std::vector<double> number_densities(num_particles);
-  for (int i = 0; i < num_particles; ++i) {
-    number_densities[i] = ComputeParticleNumberDensity(
-        i, fluid_particles, solid_particles, smoothing_radius);
-  }
-
-  // 步骤2：计算参考粒子数密度（用于判定飞溅粒子）
-  double reference_density = ComputeReferenceDensity(
-      fluid_particles, solid_particles, smoothing_radius);
-
   // 初始化所有粒子为待判定状态
   for (int i = 0; i < num_particles; ++i) {
     fluid_particles.surface_type[i] = SurfaceType::INNER;  // 默认值，后续会更新
   }
 
-  // 步骤3：粗筛
-  // 粒子数密度特别小或邻域粒子数很少的直接判定为飞溅粒子
-  // 粒子数密度很大的接近参考粒子数密度的直接判定为内部粒子
-  // 其余为待细筛粒子
+  // 步骤1：粗筛
+  // 仅判定飞溅粒子，其余粒子都进入细筛
   std::vector<bool> need_fine_screening(num_particles, false);
   for (int i = 0; i < num_particles; ++i) {
-    int total_neighbors = fluid_particles.fluid_neighbour_list[i].size() + 
-                         fluid_particles.solid_neighbour_list[i].size();
-    
-    if (!CoarseScreening(i, number_densities[i], reference_density, 
-                        total_neighbors, fluid_particles)) {
+    if (!CoarseScreening(i, fluid_particles, smoothing_radius)) {
       // 需要细筛
       need_fine_screening[i] = true;
     }
   }
 
-  // 步骤4：细筛 - 使用虚拟光源法进行进一步判定
+  // 步骤2：细筛 - 使用虚拟光源法进行进一步判定
   for (int i = 0; i < num_particles; ++i) {
     if (need_fine_screening[i]) {
       if (FineScreening(i, fluid_particles, solid_particles, 
@@ -60,7 +43,7 @@ void SurfaceDetector::DetectSurfaceParticles(
     }
   }
 
-  // 步骤5：近自由面判定
+  // 步骤3：近自由面判定
   // 内部粒子中，1.5倍粒子间距内有自由面粒子的为近自由面粒子
   for (int i = 0; i < num_particles; ++i) {
     if (fluid_particles.surface_type[i] == SurfaceType::INNER) {
@@ -120,26 +103,32 @@ double SurfaceDetector::ComputeReferenceDensity(
 }
 
 bool SurfaceDetector::CoarseScreening(int particle_idx,
-                                     double number_density,
-                                     double reference_density,
-                                     int neighbor_count,
-                                     FluidParticle& fluid_particles) const {
-  
-  // 判定飞溅粒子：粒子数密度特别小或邻域粒子数很少
-  if (number_density < (reference_density * SPLASH_DENSITY_RATIO) ||
-      neighbor_count <= MIN_NEIGHBOR_COUNT_FOR_SPLASH) {
+                                     FluidParticle& fluid_particles,
+                                     const double smoothing_radius) const {
+  const auto& fluid_neighbors = fluid_particles.fluid_neighbour_list[particle_idx];
+  const int fluid_neighbor_count = static_cast<int>(fluid_neighbors.size());
+
+  if (fluid_neighbor_count < MIN_FLUID_NEIGHBOR_COUNT_FOR_SPLASH) {
     fluid_particles.surface_type[particle_idx] = SurfaceType::SPLASH;
     return true;  // 已判定
   }
-  
-  // 判定内部粒子：粒子数密度很大且接近参考粒子数密度，且邻域粒子数足够
-  if (number_density >= (reference_density * INNER_DENSITY_RATIO) &&
-      neighbor_count >= MIN_NEIGHBOR_COUNT_FOR_INNER) {
-    fluid_particles.surface_type[particle_idx] = SurfaceType::INNER;
+
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  double nearest_fluid_distance = std::numeric_limits<double>::max();
+  for (int j : fluid_neighbors) {
+    const double dist = ComputeDistance(pos_i, fluid_particles.position[j]);
+    if (dist > 1e-10 && dist < nearest_fluid_distance) {
+      nearest_fluid_distance = dist;
+    }
+  }
+
+  // 按要求：最近流体邻域粒子距离大于 r_e 判定为飞溅粒子
+  if (nearest_fluid_distance > smoothing_radius) {
+    fluid_particles.surface_type[particle_idx] = SurfaceType::SPLASH;
     return true;  // 已判定
   }
-  
-  // 需要细筛
+
+  // 其余粒子统一进入细筛，细筛后才可能判为内部粒子
   return false;
 }
 
