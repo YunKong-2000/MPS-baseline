@@ -233,6 +233,7 @@ int main(int argc, char** argv) {
       fluid_particles, solid_particles,
       corrective_matrices_explicit,
       smoothing_radius,
+      particle_spacing,
       kinematic_viscosity,
       gravity_x, gravity_y,
       time_step,

@@ -403,6 +403,7 @@ int main() {
       solid_particles,
       matrices,
       smoothing_radius,
+      particle_spacing,
       kinematic_viscosity,
       gravity_x,
       gravity_y,

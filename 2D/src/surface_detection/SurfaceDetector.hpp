@@ -95,7 +95,7 @@ private:
                              const double particle_spacing) const;
 
   // 常量定义（避免魔法数字）
-  static constexpr int MIN_FLUID_NEIGHBOR_COUNT_FOR_SPLASH = 5;  // 流体邻域粒子数阈值（小于该值判定为飞溅）
+  static constexpr int MIN_FLUID_NEIGHBOR_COUNT_FOR_SPLASH = 6;  // 流体邻域粒子数阈值（小于该值判定为飞溅）
   static constexpr double NEAR_SURFACE_DISTANCE_RATIO = 1.5;  // 近自由面距离比例（相对于粒子间距）
   
   // 虚拟光源法相关常量（2D版本使用圆形幕布）

@@ -827,7 +827,7 @@ int main(int argc, char* argv[]) {
           flush_log();
         }
         
-#if 1       // 步骤9：判断是否需要输出计算结果
+#if 1      // 步骤9：判断是否需要输出计算结果
         if (time_manager.ShouldOutput()) {
 #else 
         if (1) {

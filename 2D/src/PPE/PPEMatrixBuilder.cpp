@@ -344,7 +344,7 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   const double2& vel_i = fluid_particles.velocity[particle_idx];
   PetscInt row = static_cast<PetscInt>(particle_idx);
   
-  // 提取速度corrective matrix的行向量（用于速度散度计算，第一类边界条件）
+  // 提取速度corrective matrix的行向量（用于回退速度散度计算）
   Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C1_velocity = corrective_matrix_velocity.row(0);
   Eigen::RowVector<double, CorrectiveMatrix::BASIS_SIZE> C2_velocity = corrective_matrix_velocity.row(1);
   
@@ -355,8 +355,19 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   
   // 初始化累加变量
   double diag_sum = 0.0;
-  double divergence_sum = 0.0;
   double wall_pressure_term = 0.0;
+
+  // 按 `divergenc.md` 构建临时速度散度约束系统：
+  // C_i = I_d ⊗ M_i + L_wall, f_i = f_fluid + f_wall, c_i = C_i^{-1} f_i
+  // div(u*) = (c1 + c7) / r_s
+  constexpr int kBasisSize = CorrectiveMatrix::BASIS_SIZE;
+  constexpr int kConstrainedSize = 2 * kBasisSize;
+  Eigen::Matrix<double, kBasisSize, kBasisSize> moment_fluid =
+      Eigen::Matrix<double, kBasisSize, kBasisSize>::Zero();
+  Eigen::Matrix<double, kConstrainedSize, kConstrainedSize> wall_constraint =
+      Eigen::Matrix<double, kConstrainedSize, kConstrainedSize>::Zero();
+  Eigen::Matrix<double, kConstrainedSize, 1> source_term =
+      Eigen::Matrix<double, kConstrainedSize, 1>::Zero();
   
   // 遍历流体邻域粒子
   for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
@@ -389,13 +400,17 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
     double off_diag_coeff = coeff_factor * common_coeff;
     MatSetValue(A_petsc, row, col, off_diag_coeff, ADD_VALUES);
     
-    // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
+    // 速度散度约束系统：流体邻域贡献
+    // M_i += w_ij P_ij P_ij^T
+    // f_fluid += w_ij (u_j - u_i) ⊗ P_ij
+    Eigen::Matrix<double, kBasisSize, kBasisSize> pp_t =
+        basis * basis.transpose();
+    moment_fluid += weight * pp_t;
+
     double dvx = vel_j.x - vel_i.x;
     double dvy = vel_j.y - vel_i.y;
-    double C1P = (C1_velocity * basis)(0, 0);
-    double C2P = (C2_velocity * basis)(0, 0);
-    // 根据文档：∇·u 使用 1/r_s 系数，而差分项为 (u_j - u_i)
-    divergence_sum += weight * (C1P * dvx + C2P * dvy);
+    source_term.template segment<kBasisSize>(0) += weight * dvx * basis;
+    source_term.template segment<kBasisSize>(kBasisSize) += weight * dvy * basis;
   }
   
   // 处理壁面邻域粒子
@@ -423,15 +438,34 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
         corrective_matrix_calc.ComputeBasisFunctionsForWall(
             dx, dy, normal.x, normal.y, smoothing_radius);
     
-    // 计算速度散度项（使用速度corrective matrix，第一类边界条件）
+    // 速度散度约束系统：壁面贡献（不可穿透边界条件）
     // 壁面贡献使用有效速度 vel_wall + Δt*g，不修改原始 solid 数组
     double vel_wall_eff_x = vel_wall.x + time_step * gravity_x;
     double vel_wall_eff_y = vel_wall.y + time_step * gravity_y;
     double dvx = vel_wall_eff_x - vel_i.x;
     double dvy = vel_wall_eff_y - vel_i.y;
-    double C1P = (C1_velocity * basis_velocity)(0, 0);
-    double C2P = (C2_velocity * basis_velocity)(0, 0);
-    divergence_sum += weight * (C1P * dvx + C2P * dvy);
+
+    const double nx = normal.x;
+    const double ny = normal.y;
+    const double normal_velocity_diff = nx * dvx + ny * dvy;
+    Eigen::Matrix<double, kBasisSize, kBasisSize> pp_t_velocity =
+        basis_velocity * basis_velocity.transpose();
+
+    // L_wall += w_ij (n_j n_j^T) ⊗ (P_ij P_ij^T)
+    wall_constraint.template block<kBasisSize, kBasisSize>(0, 0) +=
+        weight * nx * nx * pp_t_velocity;
+    wall_constraint.template block<kBasisSize, kBasisSize>(0, kBasisSize) +=
+        weight * nx * ny * pp_t_velocity;
+    wall_constraint.template block<kBasisSize, kBasisSize>(kBasisSize, 0) +=
+        weight * nx * ny * pp_t_velocity;
+    wall_constraint.template block<kBasisSize, kBasisSize>(kBasisSize, kBasisSize) +=
+        weight * ny * ny * pp_t_velocity;
+
+    // f_wall += w_ij (n_j ⊗ P_ij) n_j^T (u_wall - u_i)
+    source_term.template segment<kBasisSize>(0) +=
+        weight * nx * normal_velocity_diff * basis_velocity;
+    source_term.template segment<kBasisSize>(kBasisSize) +=
+        weight * ny * normal_velocity_diff * basis_velocity;
     
     // 计算壁面压力边界条件项（使用压力corrective matrix，第二类边界条件）
     double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;
@@ -445,9 +479,70 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   double diag_coeff = -coeff_factor * diag_sum;
   MatSetValue(A_petsc, row, row, diag_coeff, ADD_VALUES);
   
+  // 计算临时速度散度（按不可穿透壁面约束）
+  double divergence_term = 0.0;
+  Eigen::Matrix<double, kConstrainedSize, kConstrainedSize> constrained_matrix =
+      Eigen::Matrix<double, kConstrainedSize, kConstrainedSize>::Zero();
+  constrained_matrix.template block<kBasisSize, kBasisSize>(0, 0) = moment_fluid;
+  constrained_matrix.template block<kBasisSize, kBasisSize>(kBasisSize, kBasisSize) =
+      moment_fluid;
+  constrained_matrix += wall_constraint;
+
+  const Eigen::FullPivLU<Eigen::Matrix<double, kConstrainedSize, kConstrainedSize>> lu(
+      constrained_matrix);
+  if (lu.isInvertible()) {
+    const Eigen::Matrix<double, kConstrainedSize, 1> coeff_vector = lu.solve(source_term);
+    // c1 + c7（1-based）对应 [0] + [6]（0-based）
+    divergence_term = (1.0 / smoothing_radius) * (coeff_vector[0] + coeff_vector[6]);
+    divergence_term /= time_step;
+  } else {
+    // 当约束矩阵退化时，回退到旧散度离散，避免数值中断
+    double divergence_sum_fallback = 0.0;
+
+    for (int j : fluid_particles.fluid_neighbour_list[particle_idx]) {
+      const double2& pos_j = fluid_particles.position[j];
+      const double2& vel_j = fluid_particles.velocity[j];
+      double dx = pos_j.x - pos_i.x;
+      double dy = pos_j.y - pos_i.y;
+      double dist = ComputeDistance(pos_i, pos_j);
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+      double weight = WeightFunction(dist, smoothing_radius);
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis =
+          corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+      double dvx_local = vel_j.x - vel_i.x;
+      double dvy_local = vel_j.y - vel_i.y;
+      double C1P = (C1_velocity * basis)(0, 0);
+      double C2P = (C2_velocity * basis)(0, 0);
+      divergence_sum_fallback += weight * (C1P * dvx_local + C2P * dvy_local);
+    }
+
+    for (int j : fluid_particles.solid_neighbour_list[particle_idx]) {
+      const double2& pos_j = solid_particles.position[j];
+      const double2& vel_wall = solid_particles.velocity[j];
+      double dx = pos_j.x - pos_i.x;
+      double dy = pos_j.y - pos_i.y;
+      double dist = ComputeDistance(pos_i, pos_j);
+      if (dist < 1e-10 || dist > smoothing_radius) {
+        continue;
+      }
+      double weight = WeightFunction(dist, smoothing_radius);
+      Eigen::Vector<double, CorrectiveMatrix::BASIS_SIZE> basis =
+          corrective_matrix_calc.ComputeBasisFunctions(dx, dy, smoothing_radius);
+      double vel_wall_eff_x = vel_wall.x + time_step * gravity_x;
+      double vel_wall_eff_y = vel_wall.y + time_step * gravity_y;
+      double dvx_local = vel_wall_eff_x - vel_i.x;
+      double dvy_local = vel_wall_eff_y - vel_i.y;
+      double C1P = (C1_velocity * basis)(0, 0);
+      double C2P = (C2_velocity * basis)(0, 0);
+      divergence_sum_fallback += weight * (C1P * dvx_local + C2P * dvy_local);
+    }
+
+    divergence_term = (1.0 / (smoothing_radius * time_step)) * divergence_sum_fallback;
+  }
+
   // 设置右边项
-  // 速度散度项前的系数 1 / (r_s * Δt)
-  double divergence_term = (1.0 / (smoothing_radius * time_step)) * divergence_sum;
   double b_value = divergence_term + coeff_factor * wall_pressure_term;
   VecSetValue(b_petsc, row, b_value, INSERT_VALUES);
   
