@@ -42,7 +42,7 @@ $\mathbf{L}_{wall}$最终是一个10*10的矩阵
 **3、计算最终的矩矩阵**    
 原始矩矩阵为，
 $$
-C_i = I_d \otimes M_i + L_{wall}
+C_i = I_d \otimes M_i + \gamma L_{wall}
 $$
 
 求逆得到$C_i^{-1}$
@@ -58,7 +58,7 @@ $$
 f_{wall} = \sum_{j \in wall} w_{ij}(n_j \otimes P_{ij})n_j^\top(\mathbf{u}_{wall} - \mathbf{u}_i)
 $$
 
-$f_{fluid}$和$f_{wall}$均为10维向量，最终源项为$f_i=f_{fluid}+f_{wall}$
+$f_{fluid}$和$f_{wall}$均为10维向量，最终源项为$f_i=f_{fluid}+ \gamma f_{wall}$
 
 **5、计算散度**
 

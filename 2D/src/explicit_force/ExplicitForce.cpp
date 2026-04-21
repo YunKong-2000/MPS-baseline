@@ -5,7 +5,7 @@ namespace mps2D {
 
 namespace {
 constexpr double kSplashRepulsionCoeff = 20.0;
-constexpr double kSplashSafetyDistanceRatio = 0.9;
+constexpr double kSplashSafetyDistanceRatio = 1.0;
 constexpr double kSmallEps = 1e-10;
 }  // namespace
 

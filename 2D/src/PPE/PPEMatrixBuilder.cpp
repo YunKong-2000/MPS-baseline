@@ -362,6 +362,8 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
   // div(u*) = (c1 + c7) / r_s
   constexpr int kBasisSize = CorrectiveMatrix::BASIS_SIZE;
   constexpr int kConstrainedSize = 2 * kBasisSize;
+  // 不可穿透壁面约束强度系数（参考 `divergenc.md`）
+  constexpr double kWallConstraintGamma = 1.0;
   Eigen::Matrix<double, kBasisSize, kBasisSize> moment_fluid =
       Eigen::Matrix<double, kBasisSize, kBasisSize>::Zero();
   Eigen::Matrix<double, kConstrainedSize, kConstrainedSize> wall_constraint =
@@ -453,19 +455,19 @@ void PPEMatrixBuilder::BuildInnerParticleRow(
 
     // L_wall += w_ij (n_j n_j^T) ⊗ (P_ij P_ij^T)
     wall_constraint.template block<kBasisSize, kBasisSize>(0, 0) +=
-        weight * nx * nx * pp_t_velocity;
+        kWallConstraintGamma * weight * nx * nx * pp_t_velocity;
     wall_constraint.template block<kBasisSize, kBasisSize>(0, kBasisSize) +=
-        weight * nx * ny * pp_t_velocity;
+        kWallConstraintGamma * weight * nx * ny * pp_t_velocity;
     wall_constraint.template block<kBasisSize, kBasisSize>(kBasisSize, 0) +=
-        weight * nx * ny * pp_t_velocity;
+        kWallConstraintGamma * weight * nx * ny * pp_t_velocity;
     wall_constraint.template block<kBasisSize, kBasisSize>(kBasisSize, kBasisSize) +=
-        weight * ny * ny * pp_t_velocity;
+        kWallConstraintGamma * weight * ny * ny * pp_t_velocity;
 
     // f_wall += w_ij (n_j ⊗ P_ij) n_j^T (u_wall - u_i)
     source_term.template segment<kBasisSize>(0) +=
-        weight * nx * normal_velocity_diff * basis_velocity;
+        kWallConstraintGamma * weight * nx * normal_velocity_diff * basis_velocity;
     source_term.template segment<kBasisSize>(kBasisSize) +=
-        weight * ny * normal_velocity_diff * basis_velocity;
+        kWallConstraintGamma * weight * ny * normal_velocity_diff * basis_velocity;
     
     // 计算壁面压力边界条件项（使用压力corrective matrix，第二类边界条件）
     double n_dot_g = normal.x * gravity_x + normal.y * gravity_y;

@@ -162,11 +162,11 @@ bool ExtractFrontFromVTK(const std::filesystem::path& vtk_path,
 
 void PrintUsage(const char* exe_name) {
   std::cout << "用法: " << exe_name
-            << " <vtk目录> [输出csv文件] [时间间隔dt] [时间偏移t0]\n"
+            << " <vtk目录> [输出csv文件] [时间步大小dt]\n"
             << "示例:\n"
             << "  " << exe_name << " ./output\n"
             << "  " << exe_name
-            << " ./output ./output/dambreak_front_position.csv 0.01 0.0\n";
+            << " ./output ./output/dambreak_front_position.csv 0.001\n";
 }
 
 }  // namespace
@@ -195,17 +195,11 @@ int main(int argc, char* argv[]) {
     try {
       dt = std::stod(argv[3]);
     } catch (...) {
-      std::cerr << "错误：时间间隔 dt 不是有效数字: " << argv[3] << std::endl;
+      std::cerr << "错误：时间步大小 dt 不是有效数字: " << argv[3] << std::endl;
       return 1;
     }
-  }
-
-  double t0 = 0.0;
-  if (argc >= 5) {
-    try {
-      t0 = std::stod(argv[4]);
-    } catch (...) {
-      std::cerr << "错误：时间偏移 t0 不是有效数字: " << argv[4] << std::endl;
+    if (dt <= 0.0) {
+      std::cerr << "错误：时间步大小 dt 必须大于0: " << argv[3] << std::endl;
       return 1;
     }
   }
@@ -241,7 +235,7 @@ int main(int argc, char* argv[]) {
   }
 
   out_file << std::fixed << std::setprecision(15);
-  out_file << "vtk_file,file_index,time,front_x,front_y,particle_index,surface_type\n";
+  out_file << "time,front_x\n";
 
   int processed_count = 0;
   int skipped_count = 0;
@@ -249,9 +243,9 @@ int main(int argc, char* argv[]) {
     const auto& vtk_path = vtk_files[order];
     const std::string stem = vtk_path.stem().string();
     const std::optional<int> parsed_index = ExtractTrailingInteger(stem);
-    const int file_index = parsed_index.has_value() ? *parsed_index
-                                                    : static_cast<int>(order);
-    const double time = t0 + dt * static_cast<double>(file_index);
+    const int step_id = parsed_index.has_value() ? *parsed_index
+                                                 : static_cast<int>(order);
+    const double time = static_cast<double>(step_id) * dt;
 
     FrontPoint front_point;
     std::string error_message;
@@ -262,13 +256,11 @@ int main(int argc, char* argv[]) {
       continue;
     }
 
-    out_file << vtk_path.filename().string() << "," << file_index << "," << time << ",";
+    out_file << time << ",";
     if (front_point.found) {
-      out_file << front_point.x << "," << front_point.y << ","
-               << front_point.particle_index << "," << front_point.surface_type
-               << "\n";
+      out_file << front_point.x << "\n";
     } else {
-      out_file << "nan,nan,-1,-1\n";
+      out_file << "nan\n";
     }
     ++processed_count;
   }
@@ -278,7 +270,7 @@ int main(int argc, char* argv[]) {
   std::cout << "  输出文件: " << output_csv << "\n";
   std::cout << "  处理文件数: " << processed_count << "\n";
   std::cout << "  跳过文件数: " << skipped_count << "\n";
-  std::cout << "  说明: time = t0 + dt * file_index\n";
+  std::cout << "  时间步大小 dt: " << dt << "\n";
 
   return 0;
 }

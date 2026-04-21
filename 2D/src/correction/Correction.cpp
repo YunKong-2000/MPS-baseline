@@ -3,12 +3,119 @@
 #include "../particle_shifting/ParticleShifting.hpp"
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 namespace mps2D {
 
 namespace {
 
 constexpr double kVelocitySmoothingLambda = 0.1;
+constexpr double kPressureGradientDiagonalRegularization = 1e-3;
+constexpr double kSplashPenetrationSafetyDistanceRatio = 0.5;
+constexpr double kSplashPenetrationRestitutionCoeff = 0.5;
+constexpr double kSmallEps = 1e-10;
+
+struct SplashPenetrationCorrection {
+  bool applied = false;
+  double2 corrected_position = {0.0, 0.0};
+  double2 corrected_velocity = {0.0, 0.0};
+};
+
+SplashPenetrationCorrection ComputeSplashPenetrationCorrection(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    const double2& velocity_after_pressure,
+    double time_step,
+    double particle_spacing) {
+  SplashPenetrationCorrection correction;
+
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.position.size()) ||
+      particle_idx >= static_cast<int>(fluid_particles.solid_neighbour_list.size()) ||
+      particle_spacing <= kSmallEps) {
+    return correction;
+  }
+
+  const double2& position = fluid_particles.position[particle_idx];
+  const double2 predicted_position = {
+      position.x + velocity_after_pressure.x * time_step,
+      position.y + velocity_after_pressure.y * time_step};
+  correction.corrected_position = predicted_position;
+  correction.corrected_velocity = velocity_after_pressure;
+
+  const auto& solid_neighbours = fluid_particles.solid_neighbour_list[particle_idx];
+  if (solid_neighbours.empty()) {
+    return correction;
+  }
+
+  int nearest_wall_idx = -1;
+  double nearest_wall_distance = std::numeric_limits<double>::max();
+
+  for (int wall_idx : solid_neighbours) {
+    if (wall_idx < 0 ||
+        wall_idx >= static_cast<int>(solid_particles.position.size()) ||
+        wall_idx >= static_cast<int>(solid_particles.normal_vector.size())) {
+      continue;
+    }
+    const double dist = ComputeDistance(
+        predicted_position, solid_particles.position[wall_idx]);
+    if (dist < nearest_wall_distance) {
+      nearest_wall_distance = dist;
+      nearest_wall_idx = wall_idx;
+    }
+  }
+
+  if (nearest_wall_idx < 0) {
+    return correction;
+  }
+
+  const double2& wall_position = solid_particles.position[nearest_wall_idx];
+  double2 wall_normal = solid_particles.normal_vector[nearest_wall_idx];
+  const double normal_magnitude =
+      std::sqrt(wall_normal.x * wall_normal.x + wall_normal.y * wall_normal.y);
+  if (normal_magnitude > kSmallEps) {
+    wall_normal.x /= normal_magnitude;
+    wall_normal.y /= normal_magnitude;
+  } else {
+    const double dx = predicted_position.x - wall_position.x;
+    const double dy = predicted_position.y - wall_position.y;
+    const double fallback_magnitude = std::sqrt(dx * dx + dy * dy);
+    if (fallback_magnitude <= kSmallEps) {
+      return correction;
+    }
+    wall_normal = {dx / fallback_magnitude, dy / fallback_magnitude};
+  }
+
+  const double signed_distance =
+      (predicted_position.x - wall_position.x) * wall_normal.x +
+      (predicted_position.y - wall_position.y) * wall_normal.y;
+  const double safety_distance =
+      kSplashPenetrationSafetyDistanceRatio * particle_spacing;
+  if (signed_distance >= safety_distance) {
+    return correction;
+  }
+
+  const double correction_length =
+      2.0 * (safety_distance - signed_distance);
+  correction.corrected_position = {
+      predicted_position.x + correction_length * wall_normal.x,
+      predicted_position.y + correction_length * wall_normal.y};
+
+  const double normal_velocity =
+      velocity_after_pressure.x * wall_normal.x +
+      velocity_after_pressure.y * wall_normal.y;
+  // 保留切向速度，仅对法向分量执行恢复系数反弹。
+  // u = u_t + u_n n, u' = u_t - C_R * u_n n
+  // => u' = u - (1 + C_R) * u_n n
+  const double normal_correction =
+      (1.0 + kSplashPenetrationRestitutionCoeff) * normal_velocity;
+  correction.corrected_velocity = {
+      velocity_after_pressure.x - normal_correction * wall_normal.x,
+      velocity_after_pressure.y - normal_correction * wall_normal.y};
+  correction.applied = true;
+  return correction;
+}
 
 // 原有的 LSMPS type-A 压力梯度离散（保留给自由面/飞溅粒子使用）
 double2 ComputePressureGradientTypeAImpl(
@@ -209,6 +316,9 @@ double2 ComputePressureGradientTypeBImpl(
         moment_matrix_inverse, smoothing_radius,
         gravity_x, gravity_y, density);
   }
+
+  // 在对角线上添加微小正则项，增强自由面邻域压力梯度计算稳定性。
+  moment.diagonal().array() += kPressureGradientDiagonalRegularization;
 
   double det = moment.determinant();
   if (std::abs(det) < 1e-12) {
@@ -611,6 +721,28 @@ void Correction::ComputeAndUpdateAllParticles(
         fluid_particles.velocity[i].y + pressure_acceleration.y * time_step};
   }
 
+  // 同步阶段2.5：壁面穿透修正（基于 r* 预测位置，作用于所有粒子）
+  std::vector<bool> penetration_applied(num_particles, false);
+  std::vector<double2> corrected_positions(num_particles);
+  std::vector<double2> corrected_velocities(num_particles);
+  for (int i = 0; i < num_particles; ++i) {
+    const SplashPenetrationCorrection penetration_correction =
+        ComputeSplashPenetrationCorrection(
+            i,
+            fluid_particles,
+            solid_particles,
+            velocity_after_pressure[i],
+            time_step,
+            particle_spacing);
+    if (!penetration_correction.applied) {
+      continue;
+    }
+    penetration_applied[i] = true;
+    corrected_positions[i] = penetration_correction.corrected_position;
+    corrected_velocities[i] = penetration_correction.corrected_velocity;
+    velocity_after_pressure[i] = penetration_correction.corrected_velocity;
+  }
+
   // 同步阶段3：计算PS位移，并计算总位移 Δr
   const std::vector<double2> shifting_displacement =
       ParticleShifting::ComputeShiftingDisplacement(
@@ -622,6 +754,12 @@ void Correction::ComputeAndUpdateAllParticles(
 
   std::vector<double2> total_displacement(num_particles);
   for (int i = 0; i < num_particles; ++i) {
+    if (penetration_applied[i]) {
+      total_displacement[i] = {
+          corrected_positions[i].x - fluid_particles.position[i].x,
+          corrected_positions[i].y - fluid_particles.position[i].y};
+      continue;
+    }
     total_displacement[i] = {
         0.5 * time_step * (velocity_at_step_k[i].x + velocity_after_pressure[i].x) +
             shifting_displacement[i].x,
@@ -644,6 +782,10 @@ void Correction::ComputeAndUpdateAllParticles(
 
   // 同步阶段6：统一更新速度到 u^{k+1} = (1 - λ)u** + λû
   for (int i = 0; i < num_particles; ++i) {
+    if (penetration_applied[i]) {
+      fluid_particles.velocity[i] = corrected_velocities[i];
+      continue;
+    }
     const double2 velocity_smoothed = {
         (1.0 - kVelocitySmoothingLambda) * velocity_after_pressure[i].x +
             kVelocitySmoothingLambda * neighbour_average_velocity[i].x,
