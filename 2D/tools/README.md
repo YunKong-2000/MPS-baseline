@@ -186,3 +186,45 @@ python3 tools/plot_probe_pressure_timeseries.py \
 - 纵轴：`Pressure (Pa)`
 - 每条曲线：一个观测点（对应一个压力列）
 
+## 压力对比绘图（实验 vs 模拟）
+
+用于将实验压力数据与模拟压力数据画在同一张图中对比。  
+其中模拟时间坐标按下面公式对齐实验坐标：
+
+- `t_plot = step_id * dt * sqrt(9.8 / 0.6)`
+
+默认只绘制 `t <= 2s` 的数据。
+
+纵坐标默认绘制为 `P/P0`：
+
+- 模拟压力会自动除以 `P0`
+- 实验压力默认认为已经是归一化值，不再除以 `P0`
+
+### 运行示例
+
+```bash
+cd /home/amax/mps-baseline/2D
+python3 tools/plot_dambreak_pressure_comparison.py \
+  --exp tools/data/dambreak_pressure.txt \
+  --sim output/dambreak_pressure.csv \
+  --dt 0.001 \
+  --sim-time-col step_id \
+  --sim-pressure-col probe_0_pressure \
+  --p0 10000 \
+  --max-time 2.0 \
+  --out output/dambreak_pressure_comparison.png
+```
+
+### 常用参数
+
+- `--exp`：实验压力 txt 路径（默认 `tools/data/dambreak_pressure.txt`）
+- `--sim`：模拟压力 csv 路径（必填）
+- `--dt`：模拟时间步长（必填）
+- `--sim-time-col`：模拟时间/步编号列名（默认 `step_id`）
+- `--sim-pressure-col`：模拟压力列名（默认 `probe_0_pressure`）
+- `--time-scale`：时间缩放系数（默认 `sqrt(9.8/0.6)`）
+- `--max-time`：模拟原始时间筛选上限（`step_id * dt <= max-time`，默认 `2.0` 秒）
+- `--p0`：归一化参考压力 `P0`（Pa，默认 `10000`）
+- `--normalize-exp-with-p0`：若实验压力原始单位是 Pa，可开启该选项按 `P0` 归一化
+- `--out`：输出图片路径
+
