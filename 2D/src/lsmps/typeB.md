@@ -56,3 +56,13 @@ C_{i,3}
 \end{bmatrix}
 q_{ij}
 $$
+
+当使用typeB对流场中某点的物理量$\phi$进行插值时，
+$$
+\phi_i = \sum_{j \neq i}w_{ij}\phi_jC_{i,1}p_{ij}
+$$
+
+例如对侧压力点进行测压，
+$$
+P_i = \sum_{j \neq i}w_{ij}P_j C_{i,1} p_{ij}
+$$

@@ -12,6 +12,8 @@
 
 namespace {
 
+constexpr int kTypeBTermCount = 6;
+
 struct Point2D {
   double x = 0.0;
   double y = 0.0;
@@ -21,12 +23,13 @@ struct Options {
   enum class ProbeMethod {
     kAverageInRadius = 0,
     kNearestParticle = 1,
+    kLsmpsTypeB = 2,
   };
 
   double radius = 0.02;
   std::string pressure_field = "pressure";
   std::filesystem::path output_csv = "pressure_probe.csv";
-  ProbeMethod method = ProbeMethod::kAverageInRadius;
+  ProbeMethod method = ProbeMethod::kLsmpsTypeB;
   std::vector<Point2D> probe_points;
   std::vector<std::filesystem::path> vtk_inputs;
 };
@@ -47,12 +50,12 @@ void PrintUsage(const char* exe_name) {
             << " [--pressure-field <字段名>] [--method <average|nearest>]"
                " [--output <输出csv>]\n\n"
             << "参数说明:\n"
-            << "  --radius          邻域半径（average与nearest方法均使用）\n"
+            << "  --radius          邻域半径（average/nearest/lsmps均使用）\n"
             << "  --point x y       单个观测点，可重复多次\n"
             << "  --points-file     点文件，每行格式: x y（支持#注释）\n"
             << "  --vtk             输入vtk文件或包含vtk文件的目录，可重复\n"
             << "  --pressure-field  压力标量字段名，默认 pressure\n"
-            << "  --method          压力测量方法：average 或 nearest，默认 average\n"
+            << "  --method          压力测量方法：average、nearest 或 lsmps，默认 lsmps\n"
             << "  --output          输出csv路径，默认 pressure_probe.csv\n\n"
             << "示例:\n"
             << "  " << exe_name
@@ -200,8 +203,10 @@ bool ParseOptions(int argc, char* argv[], Options& options) {
         options.method = Options::ProbeMethod::kAverageInRadius;
       } else if (method == "nearest") {
         options.method = Options::ProbeMethod::kNearestParticle;
+      } else if (method == "lsmps") {
+        options.method = Options::ProbeMethod::kLsmpsTypeB;
       } else {
-        std::cerr << "错误：--method 仅支持 average 或 nearest\n";
+        std::cerr << "错误：--method 仅支持 average、nearest 或 lsmps\n";
         return false;
       }
       continue;
@@ -386,12 +391,11 @@ bool ReadVTKFrame(const std::filesystem::path& vtk_path,
       error_message = "SCALARS 数据不完整";
       return false;
     }
-
     if (scalar_name == pressure_field_name) {
       frame.pressures.assign(scalar_values.begin(),
                              scalar_values.begin() + point_data_count);
       found_pressure_field = true;
-      break;
+      continue;
     }
   }
 
@@ -404,7 +408,6 @@ bool ReadVTKFrame(const std::filesystem::path& vtk_path,
     error_message = "位置与压力数据数量不一致";
     return false;
   }
-
   return true;
 }
 
@@ -458,6 +461,127 @@ double ComputeProbePressureByNearest(const VTKFrame& frame,
     return 0.0;
   }
   return frame.pressures[best_index];
+}
+
+double ComputeMpsWeight(double distance, double radius) {
+  if (distance <= 1.0e-12 || distance >= radius) {
+    return 0.0;
+  }
+  return pow(radius / distance - 1.0, 2);
+}
+
+bool InvertMatrix6x6(const double input[kTypeBTermCount][kTypeBTermCount],
+                     double output[kTypeBTermCount][kTypeBTermCount]) {
+  double augmented[kTypeBTermCount][2 * kTypeBTermCount] = {};
+  for (int row = 0; row < kTypeBTermCount; ++row) {
+    for (int col = 0; col < kTypeBTermCount; ++col) {
+      augmented[row][col] = input[row][col];
+      augmented[row][col + kTypeBTermCount] = (row == col) ? 1.0 : 0.0;
+    }
+  }
+
+  for (int pivot = 0; pivot < kTypeBTermCount; ++pivot) {
+    int best_row = pivot;
+    double best_value = std::fabs(augmented[pivot][pivot]);
+    for (int row = pivot + 1; row < kTypeBTermCount; ++row) {
+      const double value = std::fabs(augmented[row][pivot]);
+      if (value > best_value) {
+        best_value = value;
+        best_row = row;
+      }
+    }
+    if (best_value < 1.0e-14) {
+      return false;
+    }
+    if (best_row != pivot) {
+      for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
+        std::swap(augmented[pivot][col], augmented[best_row][col]);
+      }
+    }
+
+    const double diagonal = augmented[pivot][pivot];
+    for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
+      augmented[pivot][col] /= diagonal;
+    }
+
+    for (int row = 0; row < kTypeBTermCount; ++row) {
+      if (row == pivot) {
+        continue;
+      }
+      const double factor = augmented[row][pivot];
+      if (std::fabs(factor) < 1.0e-18) {
+        continue;
+      }
+      for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
+        augmented[row][col] -= factor * augmented[pivot][col];
+      }
+    }
+  }
+
+  for (int row = 0; row < kTypeBTermCount; ++row) {
+    for (int col = 0; col < kTypeBTermCount; ++col) {
+      output[row][col] = augmented[row][col + kTypeBTermCount];
+    }
+  }
+  return true;
+}
+
+double ComputeProbePressureByLsmpsTypeB(const VTKFrame& frame,
+                                        const Point2D& probe,
+                                        double radius) {
+  if (frame.positions.empty() || radius <= 0.0) {
+    return 0.0;
+  }
+
+  const double radius_sq = radius * radius;
+  double moment[kTypeBTermCount][kTypeBTermCount] = {};
+  double rhs[kTypeBTermCount] = {};
+  int neighbor_count = 0;
+
+  for (size_t j = 0; j < frame.positions.size(); ++j) {
+    const double dx = frame.positions[j].x - probe.x;
+    const double dy = frame.positions[j].y - probe.y;
+    const double dist_sq = dx * dx + dy * dy;
+    if (dist_sq <= 1.0e-24 || dist_sq > radius_sq) {
+      continue;
+    }
+    const double distance = std::sqrt(dist_sq);
+    const double weight = ComputeMpsWeight(distance, radius);
+    if (weight <= 0.0) {
+      continue;
+    }
+
+    double basis[kTypeBTermCount] = {};
+    basis[0] = 1.0;
+    basis[1] = dx / radius;
+    basis[2] = dy / radius;
+    basis[3] = (dx * dx) / (2.0 * radius * radius);
+    basis[4] = (dy * dy) / (2.0 * radius * radius);
+    basis[5] = (dx * dy) / (radius * radius);
+
+    for (int row = 0; row < kTypeBTermCount; ++row) {
+      for (int col = 0; col < kTypeBTermCount; ++col) {
+        moment[row][col] += weight * basis[row] * basis[col];
+      }
+      rhs[row] += weight * frame.pressures[j] * basis[row];
+    }
+    ++neighbor_count;
+  }
+
+  if (neighbor_count < kTypeBTermCount) {
+    return ComputeProbePressureByNearest(frame, probe, radius);
+  }
+
+  double inverse_moment[kTypeBTermCount][kTypeBTermCount] = {};
+  if (!InvertMatrix6x6(moment, inverse_moment)) {
+    return ComputeProbePressureByNearest(frame, probe, radius);
+  }
+
+  double pressure = 0.0;
+  for (int col = 0; col < kTypeBTermCount; ++col) {
+    pressure += inverse_moment[0][col] * rhs[col];
+  }
+  return pressure;
 }
 
 }  // namespace
@@ -519,8 +643,10 @@ int main(int argc, char* argv[]) {
       double pressure = 0.0;
       if (options.method == Options::ProbeMethod::kAverageInRadius) {
         pressure = ComputeProbePressure(frame, probe, options.radius);
-      } else {
+      } else if (options.method == Options::ProbeMethod::kNearestParticle) {
         pressure = ComputeProbePressureByNearest(frame, probe, options.radius);
+      } else {
+        pressure = ComputeProbePressureByLsmpsTypeB(frame, probe, options.radius);
       }
       csv_file << "," << pressure;
     }
@@ -537,8 +663,10 @@ int main(int argc, char* argv[]) {
   std::cout << "  邻域半径: " << options.radius << "\n";
   std::cout << "  压力字段: " << options.pressure_field << "\n";
   std::cout << "  测量方法: "
-            << (options.method == Options::ProbeMethod::kAverageInRadius ? "average"
-                                                                          : "nearest")
+            << (options.method == Options::ProbeMethod::kAverageInRadius
+                    ? "average"
+                    : (options.method == Options::ProbeMethod::kNearestParticle ? "nearest"
+                                                                                : "lsmps"))
             << "\n";
 
   return (processed > 0) ? 0 : 1;

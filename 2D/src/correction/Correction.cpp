@@ -12,8 +12,30 @@ namespace {
 constexpr double kVelocitySmoothingLambda = 0.1;
 constexpr double kPressureGradientDiagonalRegularization = 1e-3;
 constexpr double kSplashPenetrationSafetyDistanceRatio = 0.5;
-constexpr double kSplashPenetrationRestitutionCoeff = 0.5;
+constexpr double kSplashPenetrationRestitutionCoeff = 0;
 constexpr double kSmallEps = 1e-10;
+
+void ClampNegativePressureForNearSurfaceParticles(
+    FluidParticle& fluid_particles) {
+  const int num_particles = fluid_particles.particle_num;
+  if (num_particles <= 0 ||
+      static_cast<int>(fluid_particles.pressure.size()) < num_particles ||
+      static_cast<int>(fluid_particles.surface_type.size()) < num_particles) {
+    return;
+  }
+
+  for (int i = 0; i < num_particles; ++i) {
+    if (fluid_particles.surface_type[i] == SurfaceType::NEAR_SURFACE &&
+        fluid_particles.pressure[i] < 0.0) {
+      fluid_particles.pressure[i] = 0.0;
+    }
+  }
+}
+
+bool IsPenetrationCorrectionTarget(SurfaceType surface_type) {
+  return surface_type == SurfaceType::SPLASH ||
+         surface_type == SurfaceType::SURFACE;
+}
 
 struct SplashPenetrationCorrection {
   bool applied = false;
@@ -32,7 +54,9 @@ SplashPenetrationCorrection ComputeSplashPenetrationCorrection(
 
   if (particle_idx < 0 ||
       particle_idx >= static_cast<int>(fluid_particles.position.size()) ||
+      particle_idx >= static_cast<int>(fluid_particles.surface_type.size()) ||
       particle_idx >= static_cast<int>(fluid_particles.solid_neighbour_list.size()) ||
+      !IsPenetrationCorrectionTarget(fluid_particles.surface_type[particle_idx]) ||
       particle_spacing <= kSmallEps) {
     return correction;
   }
@@ -688,6 +712,9 @@ void Correction::ComputeAndUpdateAllParticles(
   // 确保输出向量大小正确
   pressure_gradients.resize(num_particles);
 
+  // 近自由面粒子在压力梯度计算前执行负压截断，抑制非物理负压传播。
+  ClampNegativePressureForNearSurfaceParticles(fluid_particles);
+
   // 同步阶段1：计算所有粒子的压力梯度（只读旧场）
   for (int i = 0; i < num_particles; ++i) {
     if (i < static_cast<int>(fluid_particles.surface_type.size()) &&
@@ -726,6 +753,10 @@ void Correction::ComputeAndUpdateAllParticles(
   std::vector<double2> corrected_positions(num_particles);
   std::vector<double2> corrected_velocities(num_particles);
   for (int i = 0; i < num_particles; ++i) {
+    if (i >= static_cast<int>(fluid_particles.surface_type.size()) ||
+        !IsPenetrationCorrectionTarget(fluid_particles.surface_type[i])) {
+      continue;
+    }
     const SplashPenetrationCorrection penetration_correction =
         ComputeSplashPenetrationCorrection(
             i,

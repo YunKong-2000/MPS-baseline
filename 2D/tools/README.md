@@ -54,7 +54,7 @@ cd build/bin
 
 ## dam-break 前沿后处理
 
-用于从输出目录下的 `vtk` 文件提取液面前沿位置（`surface_type` 为 `surface/splash` 的粒子中 `x` 最大者）。
+用于从输出目录下的 `vtk` 文件提取液面前沿位置（`surface_type` 为 `surface` 的自由面粒子中 `x` 最大者）。
 
 ### 运行示例
 
@@ -193,7 +193,7 @@ python3 tools/plot_probe_pressure_timeseries.py \
 
 - `t_plot = step_id * dt * sqrt(9.8 / 0.6)`
 
-默认只绘制 `t <= 2s` 的数据。
+默认只绘制 `t(g/H)^0.5 <= 2.0` 的数据。
 
 纵坐标默认绘制为 `P/P0`：
 
@@ -223,8 +223,48 @@ python3 tools/plot_dambreak_pressure_comparison.py \
 - `--sim-time-col`：模拟时间/步编号列名（默认 `step_id`）
 - `--sim-pressure-col`：模拟压力列名（默认 `probe_0_pressure`）
 - `--time-scale`：时间缩放系数（默认 `sqrt(9.8/0.6)`）
-- `--max-time`：模拟原始时间筛选上限（`step_id * dt <= max-time`，默认 `2.0` 秒）
+- `--max-time`：无量纲时间筛选上限（`t(g/H)^0.5 <= max-time`，默认 `2.0`）
 - `--p0`：归一化参考压力 `P0`（Pa，默认 `10000`）
 - `--normalize-exp-with-p0`：若实验压力原始单位是 Pa，可开启该选项按 `P0` 归一化
 - `--out`：输出图片路径
+
+## 一键串联：测压到对比图
+
+脚本：`tools/run_dambreak_pressure_pipeline.py`  
+功能：自动执行以下两步：
+
+1. `pressure_probe_postprocess`：从 `vtk` 结果提取测压点压力序列
+2. `plot_dambreak_pressure_comparison.py`：绘制实验 vs 仿真压力对比图
+
+默认测压方法是 `lsmps`，实验时间默认已是无量纲时间 `t(g/H)^0.5`。
+
+### 最小用法（仅 4 个必填参数）
+
+```bash
+cd /home/amax/mps-baseline/2D
+python3 tools/run_dambreak_pressure_pipeline.py \
+  --point-x 0.50 \
+  --point-y 0.12 \
+  --radius 0.03 \
+  --max-time 2.0
+```
+
+### 默认行为
+
+- 自动读取 `config.ini` 中 `[Simulation] OutputInterval` 作为 `dt`（用于 `step_id -> time`）
+- 自动读取 `config.ini` 中 `[File] OutputDir` 作为 `vtk` 输入目录
+- 默认实验数据：`tools/data/dambreak_pressure.txt`
+- 默认测压输出：`output/dambreak_pressure.csv`
+- 默认对比图输出：`output/dambreak_pressure_comparison.png`
+- 测压方法默认 `lsmps`
+
+### 常用可选参数
+
+- `--config`：指定配置文件（默认 `config.ini`）
+- `--dt`：手动指定相邻输出帧时间间隔（覆盖配置读取）
+- `--vtk`：手动指定 vtk 目录/文件（覆盖配置文件输出目录）
+- `--method`：`average` / `nearest` / `lsmps`（默认 `lsmps`）
+- `--out`：指定输出图片路径
+- `--probe-csv`：指定测压结果 CSV 路径
+- `--rebuild-tools`：强制重新编译 `pressure_probe_postprocess`
 

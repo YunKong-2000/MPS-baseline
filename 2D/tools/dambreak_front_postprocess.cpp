@@ -14,7 +14,6 @@
 namespace {
 
 constexpr int kSurfaceTypeSurface = 2;
-constexpr int kSurfaceTypeSplash = 3;
 
 struct FrontPoint {
   bool found = false;
@@ -144,7 +143,8 @@ bool ExtractFrontFromVTK(const std::filesystem::path& vtk_path,
   double max_x = -std::numeric_limits<double>::infinity();
   for (int i = 0; i < num_points; ++i) {
     const int st = surface_type_values[i];
-    if (st != kSurfaceTypeSplash && st != kSurfaceTypeSurface) {
+    // 流体前沿定义：自由面粒子(surface_type=2)中 x 最大者。
+    if (st != kSurfaceTypeSurface) {
       continue;
     }
     if (x_coords[i] > max_x) {

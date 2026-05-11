@@ -143,13 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--time-scale",
         type=float,
         default=math.sqrt(9.8 / 0.6),
-        help="Scale factor multiplied to simulation time for alignment.",
+        help="Scale factor for non-dimensional time: t*sqrt(g/H).",
     )
     parser.add_argument(
         "--max-time",
         type=float,
         default=2.0,
-        help="Maximum time shown in figure (seconds).",
+        help="Maximum non-dimensional time shown in figure: t*sqrt(g/H).",
     )
     parser.add_argument(
         "--p0",
@@ -192,15 +192,13 @@ def main() -> None:
 
     exp_path = resolve_exp_path(args.exp)
     exp_time, exp_pressure = read_experiment_txt(exp_path)
+    exp_time, exp_pressure = filter_by_max_time(exp_time, exp_pressure, args.max_time)
 
     sim_step, sim_pressure = read_simulation_csv(
         args.sim, time_col=args.sim_time_col, pressure_col=args.sim_pressure_col
     )
-    sim_time_raw = [step * args.dt for step in sim_step]
-    sim_time_raw, sim_pressure = filter_by_max_time(
-        sim_time_raw, sim_pressure, args.max_time
-    )
-    sim_time = [t * args.time_scale for t in sim_time_raw]
+    sim_time = [step * args.dt * args.time_scale for step in sim_step]
+    sim_time, sim_pressure = filter_by_max_time(sim_time, sim_pressure, args.max_time)
 
     if not exp_time:
         raise ValueError("No experiment data found.")
@@ -223,7 +221,7 @@ def main() -> None:
         label="Experiment",
     )
     plt.plot(sim_time, sim_pressure, "-", linewidth=2.0, label="Simulation")
-    plt.xlabel("Time (s)")
+    plt.xlabel("t(g/H)^0.5")
     plt.ylabel("P/P0")
     plt.title(args.title)
     plt.grid(True, linestyle="--", alpha=0.35)
@@ -232,10 +230,13 @@ def main() -> None:
     plt.savefig(args.out, dpi=220)
     print(f"Saved figure to: {args.out}")
     print(
-        "Applied simulation time transform: "
-        f"t_plot = step * dt * time_scale = step * {args.dt} * {args.time_scale}"
+        "Applied simulation non-dimensional time transform: "
+        f"t_nd = (step * dt) * sqrt(g/H) = (step * {args.dt}) * {args.time_scale}"
     )
-    print(f"Applied simulation raw-time filter: step * dt <= {args.max_time}")
+    print(
+        "Assumed experiment time is already non-dimensional (t*sqrt(g/H)); no extra transform applied."
+    )
+    print(f"Applied non-dimensional time filter: t_nd <= {args.max_time}")
     print(f"Applied pressure normalization: P/P0, P0 = {args.p0} Pa")
 
 
