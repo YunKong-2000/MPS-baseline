@@ -741,11 +741,13 @@ int main(int argc, char* argv[]) {
         }
         
         // 从PETSc向量提取压力值（只有在求解成功且p_petsc不为NULL时）
+        // 对 PPE 结果统一执行负压截断：p = max(p, 0)。
         if (solve_success && p_petsc != NULL) {
           PetscScalar* p_array;
           VecGetArray(p_petsc, &p_array);
           for (int i = 0; i < num_fluid; ++i) {
-            fluid_particles.pressure[i] = p_array[i];
+            const double solved_pressure = static_cast<double>(p_array[i]);
+            fluid_particles.pressure[i] = std::max(0.0, solved_pressure);
           }
           VecRestoreArray(p_petsc, &p_array);
         } else if (!solve_success) {

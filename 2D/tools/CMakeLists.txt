@@ -13,8 +13,13 @@ add_executable(dambreak_front_postprocess
     dambreak_front_postprocess.cpp
 )
 
+add_executable(liquid_height_postprocess
+    liquid_height_postprocess.cpp
+)
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(pressure_probe_postprocess PRIVATE DEBUG=1)
     target_compile_definitions(dambreak_front_postprocess PRIVATE DEBUG=1)
+    target_compile_definitions(liquid_height_postprocess PRIVATE DEBUG=1)
 endif()
 

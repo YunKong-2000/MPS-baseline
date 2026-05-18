@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "串联执行 dam-break 测压后处理与实验对比绘图。"
-            "默认测压方法为 lsmps，仅需提供测压点、邻域半径和绘图最大时间。"
+            "默认测压方法为 mps_taylor，仅需提供测压点、邻域半径和绘图最大时间。"
         )
     )
     parser.add_argument("--point-x", type=float, required=True, help="测压点 x 坐标。")
@@ -24,15 +24,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-time",
         type=float,
         required=True,
-        help="对比图最大无量纲时间（用于筛选 t(g/H)^0.5 <= max-time）。",
+        help="模拟结果绘图最大物理时间（秒），用于筛选模拟数据 time <= max-time。",
     )
 
     parser.add_argument(
         "--method",
         type=str,
-        default="lsmps",
-        choices=("average", "nearest", "lsmps"),
-        help="测压方法，默认 lsmps。",
+        default="mps_taylor",
+        choices=("average", "nearest", "mps_taylor", "lsmps"),
+        help="测压方法，默认 mps_taylor（lsmps 为兼容别名）。",
+    )
+    parser.add_argument(
+        "--mps-probe-min-neighbors",
+        type=int,
+        default=3,
+        help="mps_taylor 方法下测压点最少邻域粒子数，默认 3。",
     )
     parser.add_argument(
         "--case-dir",
@@ -59,13 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--vtk",
         type=Path,
         default=None,
-        help="vtk 输入目录/文件；默认读取 config 的 [File] OutputDir。",
+        help="vtk 输入目录/文件；默认使用 --result-dir（不存在时回退读取 config 的 [File] OutputDir）。",
     )
     parser.add_argument(
         "--exp",
         type=Path,
-        default=Path("tools/data/dambreak_pressure.txt"),
-        help="实验压力数据文件，默认 tools/data/dambreak_pressure.txt。",
+        default=None,
+        help="实验压力数据文件（可选；仅在提供该参数时才会绘制实验对比图）。",
+    )
+    parser.add_argument(
+        "--result-dir",
+        type=Path,
+        default=Path("output"),
+        help="结果文件目录（用于 vtk 输入、probe csv 与对比图输出默认路径）。",
     )
     parser.add_argument(
         "--probe-csv",
@@ -80,22 +92,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="对比图输出路径。",
     )
     parser.add_argument(
+        "--sim-curve-out",
+        type=Path,
+        default=Path("output/probe_pressure_timeseries.png"),
+        help="仅模拟压力曲线输出路径（横轴时间，纵轴压力）。",
+    )
+    parser.add_argument(
         "--pressure-field",
         type=str,
         default="pressure",
         help="VTK 压力字段名，默认 pressure。",
-    )
-    parser.add_argument(
-        "--p0",
-        type=float,
-        default=10000.0,
-        help="归一化参考压力 P0（Pa），默认 10000。",
-    )
-    parser.add_argument(
-        "--time-scale",
-        type=float,
-        default=None,
-        help="仿真时间无量纲缩放系数；缺省时沿用绘图脚本默认值。",
     )
     parser.add_argument(
         "--tools-build-dir",
@@ -187,15 +193,17 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.radius <= 0.0:
         raise ValueError("--radius 必须为正数")
+    if args.mps_probe_min_neighbors < 1:
+        raise ValueError("--mps-probe-min-neighbors 必须 >= 1")
     if args.max_time <= 0.0:
         raise ValueError("--max-time 必须为正数")
-    if args.p0 <= 0.0:
-        raise ValueError("--p0 必须为正数")
 
     case_dir = args.case_dir.resolve()
     config_path = resolve_path(case_dir, args.config)
     tools_build_dir = resolve_path(case_dir, args.tools_build_dir)
     tools_build_dir.mkdir(parents=True, exist_ok=True)
+    result_dir = resolve_path(case_dir, args.result_dir)
+    result_dir.mkdir(parents=True, exist_ok=True)
 
     if args.dt is not None:
         dt = args.dt
@@ -211,22 +219,47 @@ def main() -> None:
     if args.vtk is not None:
         vtk_path = resolve_path(case_dir, args.vtk)
     else:
-        vtk_path = read_output_dir_from_config(config_path, case_dir)
+        vtk_path = result_dir
+        if not vtk_path.exists():
+            vtk_path = read_output_dir_from_config(config_path, case_dir)
     if not vtk_path.exists():
         raise FileNotFoundError(f"VTK 输入路径不存在: {vtk_path}")
 
-    exp_path = resolve_path(case_dir, args.exp)
-    if not exp_path.exists():
+    exp_path = resolve_path(case_dir, args.exp) if args.exp is not None else None
+    has_experiment_data = exp_path is not None
+    if has_experiment_data and not exp_path.exists():
         raise FileNotFoundError(f"实验数据文件不存在: {exp_path}")
 
-    probe_csv = resolve_path(case_dir, args.probe_csv)
+    default_probe_csv = result_dir / "dambreak_pressure.csv"
+    probe_csv = (
+        resolve_path(case_dir, args.probe_csv)
+        if args.probe_csv != Path("output/dambreak_pressure.csv")
+        else default_probe_csv
+    )
     probe_csv.parent.mkdir(parents=True, exist_ok=True)
-    out_png = resolve_path(case_dir, args.out)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
+    default_out_png = result_dir / "dambreak_pressure_comparison.png"
+    out_png = None
+    if has_experiment_data:
+        out_png = (
+            resolve_path(case_dir, args.out)
+            if args.out != Path("output/dambreak_pressure_comparison.png")
+            else default_out_png
+        )
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+    default_sim_curve_png = result_dir / "probe_pressure_timeseries.png"
+    sim_curve_png = (
+        resolve_path(case_dir, args.sim_curve_out)
+        if args.sim_curve_out != Path("output/probe_pressure_timeseries.png")
+        else default_sim_curve_png
+    )
+    sim_curve_png.parent.mkdir(parents=True, exist_ok=True)
 
     probe_bin = ensure_pressure_probe_tool(case_dir, tools_build_dir, args.rebuild_tools)
     plot_script = case_dir / "tools" / "plot_dambreak_pressure_comparison.py"
-    if not plot_script.exists():
+    sim_curve_plot_script = case_dir / "tools" / "plot_probe_pressure_timeseries.py"
+    if not sim_curve_plot_script.exists():
+        raise FileNotFoundError(f"未找到模拟压力曲线绘图脚本: {sim_curve_plot_script}")
+    if has_experiment_data and not plot_script.exists():
         raise FileNotFoundError(f"未找到绘图脚本: {plot_script}")
 
     probe_cmd = [
@@ -239,7 +272,9 @@ def main() -> None:
         "--vtk",
         str(vtk_path),
         "--method",
-        args.method,
+        "mps_taylor" if args.method == "lsmps" else args.method,
+        "--mps-probe-min-neighbors",
+        str(args.mps_probe_min_neighbors),
         "--pressure-field",
         args.pressure_field,
         "--output",
@@ -247,40 +282,63 @@ def main() -> None:
     ]
     run_checked(probe_cmd, cwd=case_dir)
 
-    plot_cmd = [
+    sim_curve_cmd = [
         sys.executable,
-        str(plot_script),
-        "--exp",
-        str(exp_path),
-        "--sim",
+        str(sim_curve_plot_script),
+        "--csv",
         str(probe_csv),
         "--dt",
         str(dt),
-        "--sim-time-col",
-        "step_id",
-        "--sim-pressure-col",
-        "probe_0_pressure",
-        "--p0",
-        str(args.p0),
         "--max-time",
         str(args.max_time),
         "--out",
-        str(out_png),
+        str(sim_curve_png),
+        "--title",
+        "Probe Pressure Time-Series",
     ]
-    if args.time_scale is not None:
-        if args.time_scale <= 0.0:
-            raise ValueError("--time-scale 必须为正数")
-        plot_cmd.extend(["--time-scale", str(args.time_scale)])
-    run_checked(plot_cmd, cwd=case_dir)
+    run_checked(sim_curve_cmd, cwd=case_dir)
+
+    if has_experiment_data:
+        plot_cmd = [
+            sys.executable,
+            str(plot_script),
+            "--exp",
+            str(exp_path),
+            "--sim",
+            str(probe_csv),
+            "--dt",
+            str(dt),
+            "--sim-time-col",
+            "step_id",
+            "--sim-pressure-col",
+            "probe_0_pressure",
+            "--max-time",
+            str(args.max_time),
+            "--out",
+            str(out_png),
+        ]
+        run_checked(plot_cmd, cwd=case_dir)
+    else:
+        print("未检测到实验数据输入，已跳过实验-模拟对比绘图，仅输出模拟测压结果。")
 
     print("\nPipeline 完成：")
     print(f"- 测压点: ({args.point_x}, {args.point_y})")
     print(f"- 测压半径: {args.radius}")
     print(f"- 方法: {args.method}")
+    print(f"- mps_taylor最少邻域粒子数: {args.mps_probe_min_neighbors}")
     print(f"- 时间间隔(dt): {dt}")
+    print(f"- 结果目录: {result_dir}")
+    if has_experiment_data:
+        print(f"- 实验数据文件: {exp_path}")
+    else:
+        print("- 实验数据文件: 未提供")
     print(f"- VTK 输入: {vtk_path}")
     print(f"- 测压 CSV: {probe_csv}")
-    print(f"- 对比图: {out_png}")
+    print(f"- 模拟压力曲线: {sim_curve_png}")
+    if has_experiment_data:
+        print(f"- 对比图: {out_png}")
+    else:
+        print("- 对比图: 已跳过（未提供实验数据）")
 
 
 if __name__ == "__main__":

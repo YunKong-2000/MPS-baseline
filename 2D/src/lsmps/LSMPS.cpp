@@ -3,6 +3,22 @@
 
 namespace mps2D {
 
+namespace {
+constexpr double kSurfaceOperatorDiagonalRegularization = 1e-3;
+
+bool NeedsSurfaceRegularization(
+    int particle_idx,
+    const FluidParticle& fluid_particles) {
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.surface_type.size())) {
+    return false;
+  }
+  const SurfaceType surface_type = fluid_particles.surface_type[particle_idx];
+  return surface_type == SurfaceType::SURFACE ||
+         surface_type == SurfaceType::NEAR_SURFACE;
+}
+}  // namespace
+
 Eigen::Matrix<double, CorrectiveMatrix::MATRIX_SIZE, CorrectiveMatrix::MATRIX_SIZE>
 CorrectiveMatrix::ComputeCorrectiveMatrix(
     int particle_idx,
@@ -48,6 +64,11 @@ CorrectiveMatrix::ComputeMomentMatrix(
   Eigen::MatrixXd M = BuildCoefficientMatrix(
       particle_idx, fluid_particles, solid_particles, smoothing_radius, border_condition);
 
+  if (NeedsSurfaceRegularization(particle_idx, fluid_particles)) {
+    // 自由面与近自由面粒子的算子矩阵在求逆前统一加对角正则，提升稳定性。
+    M.diagonal().array() += kSurfaceOperatorDiagonalRegularization;
+  }
+
   // 检查矩阵是否可逆
   if (!IsMatrixInvertible(M)) {
     return Eigen::Matrix<double, MATRIX_SIZE, MATRIX_SIZE>::Identity();
@@ -88,6 +109,11 @@ CorrectiveMatrix::ComputeMomentMatrixFluidOnly(
     double weight = WeightFunction(dist, smoothing_radius);
     Eigen::Vector<double, BASIS_SIZE> basis = ComputeBasisFunctions(dx, dy, smoothing_radius);
     C += weight * basis * basis.transpose();
+  }
+
+  if (NeedsSurfaceRegularization(particle_idx, fluid_particles)) {
+    // 仅流体邻域版本与主流程保持一致，对表面相关粒子统一施加对角正则。
+    C.diagonal().array() += kSurfaceOperatorDiagonalRegularization;
   }
   
   // 检查矩阵是否可逆

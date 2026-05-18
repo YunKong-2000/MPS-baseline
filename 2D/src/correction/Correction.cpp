@@ -32,18 +32,18 @@ void ClampNegativePressureForNearSurfaceParticles(
   }
 }
 
-bool IsPenetrationCorrectionTarget(SurfaceType surface_type) {
+[[maybe_unused]] bool IsPenetrationCorrectionTarget(SurfaceType surface_type) {
   return surface_type == SurfaceType::SPLASH ||
          surface_type == SurfaceType::SURFACE;
 }
 
-struct SplashPenetrationCorrection {
+struct [[maybe_unused]] SplashPenetrationCorrection {
   bool applied = false;
   double2 corrected_position = {0.0, 0.0};
   double2 corrected_velocity = {0.0, 0.0};
 };
 
-SplashPenetrationCorrection ComputeSplashPenetrationCorrection(
+[[maybe_unused]] SplashPenetrationCorrection ComputeSplashPenetrationCorrection(
     int particle_idx,
     const FluidParticle& fluid_particles,
     const SolidParticle& solid_particles,
@@ -748,32 +748,6 @@ void Correction::ComputeAndUpdateAllParticles(
         fluid_particles.velocity[i].y + pressure_acceleration.y * time_step};
   }
 
-  // 同步阶段2.5：壁面穿透修正（基于 r* 预测位置，作用于所有粒子）
-  std::vector<bool> penetration_applied(num_particles, false);
-  std::vector<double2> corrected_positions(num_particles);
-  std::vector<double2> corrected_velocities(num_particles);
-  for (int i = 0; i < num_particles; ++i) {
-    if (i >= static_cast<int>(fluid_particles.surface_type.size()) ||
-        !IsPenetrationCorrectionTarget(fluid_particles.surface_type[i])) {
-      continue;
-    }
-    const SplashPenetrationCorrection penetration_correction =
-        ComputeSplashPenetrationCorrection(
-            i,
-            fluid_particles,
-            solid_particles,
-            velocity_after_pressure[i],
-            time_step,
-            particle_spacing);
-    if (!penetration_correction.applied) {
-      continue;
-    }
-    penetration_applied[i] = true;
-    corrected_positions[i] = penetration_correction.corrected_position;
-    corrected_velocities[i] = penetration_correction.corrected_velocity;
-    velocity_after_pressure[i] = penetration_correction.corrected_velocity;
-  }
-
   // 同步阶段3：计算PS位移，并计算总位移 Δr
   const std::vector<double2> shifting_displacement =
       ParticleShifting::ComputeShiftingDisplacement(
@@ -785,17 +759,32 @@ void Correction::ComputeAndUpdateAllParticles(
 
   std::vector<double2> total_displacement(num_particles);
   for (int i = 0; i < num_particles; ++i) {
-    if (penetration_applied[i]) {
-      total_displacement[i] = {
-          corrected_positions[i].x - fluid_particles.position[i].x,
-          corrected_positions[i].y - fluid_particles.position[i].y};
-      continue;
-    }
     total_displacement[i] = {
         0.5 * time_step * (velocity_at_step_k[i].x + velocity_after_pressure[i].x) +
             shifting_displacement[i].x,
         0.5 * time_step * (velocity_at_step_k[i].y + velocity_after_pressure[i].y) +
             shifting_displacement[i].y};
+  }
+
+  // 对飞溅粒子重新启用壁面防穿透修正（位置+速度）。
+  for (int i = 0; i < num_particles; ++i) {
+    if (i >= static_cast<int>(fluid_particles.surface_type.size()) ||
+        fluid_particles.surface_type[i] != SurfaceType::SPLASH) {
+      continue;
+    }
+    const SplashPenetrationCorrection penetration_correction =
+        ComputeSplashPenetrationCorrection(
+            i, fluid_particles, solid_particles, velocity_after_pressure[i],
+            time_step, particle_spacing);
+    if (!penetration_correction.applied) {
+      continue;
+    }
+
+    const double2& current_position = fluid_particles.position[i];
+    total_displacement[i] = {
+        penetration_correction.corrected_position.x - current_position.x,
+        penetration_correction.corrected_position.y - current_position.y};
+    velocity_after_pressure[i] = penetration_correction.corrected_velocity;
   }
 
   // 同步阶段4：统一更新位置到 x^{k+1}
@@ -813,10 +802,6 @@ void Correction::ComputeAndUpdateAllParticles(
 
   // 同步阶段6：统一更新速度到 u^{k+1} = (1 - λ)u** + λû
   for (int i = 0; i < num_particles; ++i) {
-    if (penetration_applied[i]) {
-      fluid_particles.velocity[i] = corrected_velocities[i];
-      continue;
-    }
     const double2 velocity_smoothed = {
         (1.0 - kVelocitySmoothingLambda) * velocity_after_pressure[i].x +
             kVelocitySmoothingLambda * neighbour_average_velocity[i].x,

@@ -22,7 +22,7 @@ void SurfaceDetector::DetectSurfaceParticles(
   }
 
   // 步骤1：粗筛
-  // 仅判定飞溅粒子，其余粒子都进入细筛
+  // 当前版本不在粗筛阶段判定飞溅，所有粒子均进入细筛
   std::vector<bool> need_fine_screening(num_particles, false);
   for (int i = 0; i < num_particles; ++i) {
     if (!CoarseScreening(i, fluid_particles, smoothing_radius)) {
@@ -105,30 +105,21 @@ double SurfaceDetector::ComputeReferenceDensity(
 bool SurfaceDetector::CoarseScreening(int particle_idx,
                                      FluidParticle& fluid_particles,
                                      const double smoothing_radius) const {
-  const auto& fluid_neighbors = fluid_particles.fluid_neighbour_list[particle_idx];
-  const int fluid_neighbor_count = static_cast<int>(fluid_neighbors.size());
-
+  (void)smoothing_radius;
+  // 保留原有规则：邻域流体粒子数过少直接判定为飞溅粒子。
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.fluid_neighbour_list.size()) ||
+      particle_idx >= static_cast<int>(fluid_particles.surface_type.size())) {
+    return false;
+  }
+  const int fluid_neighbor_count =
+      static_cast<int>(fluid_particles.fluid_neighbour_list[particle_idx].size());
   if (fluid_neighbor_count < MIN_FLUID_NEIGHBOR_COUNT_FOR_SPLASH) {
     fluid_particles.surface_type[particle_idx] = SurfaceType::SPLASH;
-    return true;  // 已判定
+    return true;
   }
 
-  const double2& pos_i = fluid_particles.position[particle_idx];
-  double nearest_fluid_distance = std::numeric_limits<double>::max();
-  for (int j : fluid_neighbors) {
-    const double dist = ComputeDistance(pos_i, fluid_particles.position[j]);
-    if (dist > 1e-10 && dist < nearest_fluid_distance) {
-      nearest_fluid_distance = dist;
-    }
-  }
-
-  // 按要求：最近流体邻域粒子距离大于 r_e 判定为飞溅粒子
-  if (nearest_fluid_distance > smoothing_radius) {
-    fluid_particles.surface_type[particle_idx] = SurfaceType::SPLASH;
-    return true;  // 已判定
-  }
-
-  // 其余粒子统一进入细筛，细筛后才可能判为内部粒子
+  // 其余粒子进入细筛（自由面/内部），之后再做“自由面转飞溅”距离判定。
   return false;
 }
 

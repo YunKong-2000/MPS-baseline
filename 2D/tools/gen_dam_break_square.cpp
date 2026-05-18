@@ -57,11 +57,11 @@ void WriteSolidFile(const std::string& file_path,
 }  // namespace
 
 int main() {
-  constexpr double kParticleSpacing = 0.02;    // m
-  constexpr double kContainerWidth = 3.22;     // m
-  constexpr double kContainerHeight = 3.22;    // m
-  constexpr double kFluidLength = 1.2;         // m
-  constexpr double kFluidHeight = 0.6;         // m
+  constexpr double kParticleSpacing = 0.0025;    // m
+  constexpr double kContainerWidth = 1.2;     // m
+  constexpr double kContainerHeight = 1.2;    // m
+  constexpr double kFluidLength = 0.68;         // m
+  constexpr double kFluidHeight = 0.12;         // m
   constexpr double kInvSqrt2 = 0.7071067811865475244;
 
   const int nx_fluid = GridCount(kFluidLength, kParticleSpacing);
@@ -123,9 +123,9 @@ int main() {
 
   std::filesystem::create_directories(output_dir);
   const std::string fluid_file =
-      (output_dir / "fluid_particles_dam_break_2d.txt").string();
+      (output_dir / "fluid_particles_dam_break_Hu.txt").string();
   const std::string solid_file =
-      (output_dir / "solid_particles_dam_break_2d.txt").string();
+      (output_dir / "solid_particles_dam_break_Hu.txt").string();
 
   try {
     WriteFluidFile(fluid_file, fluid_particles);

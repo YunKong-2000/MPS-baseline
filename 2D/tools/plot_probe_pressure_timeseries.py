@@ -40,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Figure title.",
     )
     parser.add_argument(
+        "--max-time",
+        type=float,
+        default=None,
+        help="Maximum physical time shown for simulation curves (seconds).",
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Show interactive window after saving figure.",
@@ -93,15 +99,32 @@ def parse_probe_series(csv_path: Path) -> Tuple[List[float], Dict[str, List[floa
     return step_ids, probe_data
 
 
+def filter_probe_data_by_max_time(
+    times: List[float], probe_data: Dict[str, List[float]], max_time: float
+) -> Tuple[List[float], Dict[str, List[float]]]:
+    kept_indices = [idx for idx, t in enumerate(times) if t <= max_time]
+    filtered_times = [times[idx] for idx in kept_indices]
+    filtered_probe_data: Dict[str, List[float]] = {}
+    for column_name, values in probe_data.items():
+        filtered_probe_data[column_name] = [values[idx] for idx in kept_indices]
+    return filtered_times, filtered_probe_data
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
     if args.dt <= 0.0:
         raise ValueError("--dt must be positive")
+    if args.max_time is not None and args.max_time <= 0.0:
+        raise ValueError("--max-time must be positive")
 
     step_ids, probe_data = parse_probe_series(args.csv)
     times = [step * args.dt for step in step_ids]
+    if args.max_time is not None:
+        times, probe_data = filter_probe_data_by_max_time(times, probe_data, args.max_time)
+    if not times:
+        raise ValueError("No simulation points left after max-time filtering.")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
 

@@ -12,7 +12,8 @@
 
 namespace {
 
-constexpr int kTypeBTermCount = 6;
+constexpr double kTinyDistance = 1.0e-12;
+constexpr int kDimension2D = 2;
 
 struct Point2D {
   double x = 0.0;
@@ -23,13 +24,14 @@ struct Options {
   enum class ProbeMethod {
     kAverageInRadius = 0,
     kNearestParticle = 1,
-    kLsmpsTypeB = 2,
+    kOriginalMpsTaylor = 2,
   };
 
   double radius = 0.02;
+  int mps_probe_min_neighbors = 3;
   std::string pressure_field = "pressure";
   std::filesystem::path output_csv = "pressure_probe.csv";
-  ProbeMethod method = ProbeMethod::kLsmpsTypeB;
+  ProbeMethod method = ProbeMethod::kOriginalMpsTaylor;
   std::vector<Point2D> probe_points;
   std::vector<std::filesystem::path> vtk_inputs;
 };
@@ -47,15 +49,17 @@ void PrintUsage(const char* exe_name) {
             << " [--points-file <点文件>] --vtk <vtk文件或目录>"
             << " [--vtk <vtk文件或目录> ...]\n"
             << "  " << std::string(exe_name)
-            << " [--pressure-field <字段名>] [--method <average|nearest>]"
+            << " [--pressure-field <字段名>] [--method <average|nearest|mps_taylor>]"
                " [--output <输出csv>]\n\n"
             << "参数说明:\n"
-            << "  --radius          邻域半径（average/nearest/lsmps均使用）\n"
+            << "  --radius          邻域半径（average/nearest/mps_taylor均使用）\n"
+            << "  --mps-probe-min-neighbors  mps_taylor 方法下测压点最少邻域粒子数，默认 3\n"
             << "  --point x y       单个观测点，可重复多次\n"
             << "  --points-file     点文件，每行格式: x y（支持#注释）\n"
             << "  --vtk             输入vtk文件或包含vtk文件的目录，可重复\n"
             << "  --pressure-field  压力标量字段名，默认 pressure\n"
-            << "  --method          压力测量方法：average、nearest 或 lsmps，默认 lsmps\n"
+            << "  --method          压力测量方法：average、nearest 或 mps_taylor，默认 mps_taylor\n"
+            << "                    兼容别名：lsmps（会映射为 mps_taylor）\n"
             << "  --output          输出csv路径，默认 pressure_probe.csv\n\n"
             << "示例:\n"
             << "  " << exe_name
@@ -185,6 +189,24 @@ bool ParseOptions(int argc, char* argv[], Options& options) {
       }
       continue;
     }
+    if (arg == "--mps-probe-min-neighbors") {
+      if (i + 1 >= argc) {
+        std::cerr << "错误：--mps-probe-min-neighbors 缺少参数\n";
+        return false;
+      }
+      double value = 0.0;
+      if (!ParseDouble(argv[++i], value) || value < 1.0) {
+        std::cerr << "错误：--mps-probe-min-neighbors 必须是 >=1 的整数\n";
+        return false;
+      }
+      const int int_value = static_cast<int>(value);
+      if (std::fabs(value - static_cast<double>(int_value)) > 1.0e-9) {
+        std::cerr << "错误：--mps-probe-min-neighbors 必须是整数\n";
+        return false;
+      }
+      options.mps_probe_min_neighbors = int_value;
+      continue;
+    }
     if (arg == "--pressure-field") {
       if (i + 1 >= argc) {
         std::cerr << "错误：--pressure-field 缺少参数\n";
@@ -203,10 +225,10 @@ bool ParseOptions(int argc, char* argv[], Options& options) {
         options.method = Options::ProbeMethod::kAverageInRadius;
       } else if (method == "nearest") {
         options.method = Options::ProbeMethod::kNearestParticle;
-      } else if (method == "lsmps") {
-        options.method = Options::ProbeMethod::kLsmpsTypeB;
+      } else if (method == "mps_taylor" || method == "lsmps") {
+        options.method = Options::ProbeMethod::kOriginalMpsTaylor;
       } else {
-        std::cerr << "错误：--method 仅支持 average、nearest 或 lsmps\n";
+        std::cerr << "错误：--method 仅支持 average、nearest 或 mps_taylor\n";
         return false;
       }
       continue;
@@ -464,124 +486,116 @@ double ComputeProbePressureByNearest(const VTKFrame& frame,
 }
 
 double ComputeMpsWeight(double distance, double radius) {
-  if (distance <= 1.0e-12 || distance >= radius) {
+  if (distance <= kTinyDistance || distance >= radius) {
     return 0.0;
   }
   return pow(radius / distance - 1.0, 2);
 }
 
-bool InvertMatrix6x6(const double input[kTypeBTermCount][kTypeBTermCount],
-                     double output[kTypeBTermCount][kTypeBTermCount]) {
-  double augmented[kTypeBTermCount][2 * kTypeBTermCount] = {};
-  for (int row = 0; row < kTypeBTermCount; ++row) {
-    for (int col = 0; col < kTypeBTermCount; ++col) {
-      augmented[row][col] = input[row][col];
-      augmented[row][col + kTypeBTermCount] = (row == col) ? 1.0 : 0.0;
+bool FindNearestParticleIndex(const VTKFrame& frame,
+                              const Point2D& probe,
+                              double radius,
+                              size_t& index,
+                              double& distance_sq,
+                              bool only_within_radius) {
+  const double radius_sq = radius * radius;
+  bool found = false;
+  double best_dist_sq = std::numeric_limits<double>::max();
+  size_t best_index = 0;
+  for (size_t k = 0; k < frame.positions.size(); ++k) {
+    const double dx = frame.positions[k].x - probe.x;
+    const double dy = frame.positions[k].y - probe.y;
+    const double dist_sq = dx * dx + dy * dy;
+    if (only_within_radius && dist_sq > radius_sq) {
+      continue;
+    }
+    if (dist_sq < best_dist_sq) {
+      best_dist_sq = dist_sq;
+      best_index = k;
+      found = true;
     }
   }
-
-  for (int pivot = 0; pivot < kTypeBTermCount; ++pivot) {
-    int best_row = pivot;
-    double best_value = std::fabs(augmented[pivot][pivot]);
-    for (int row = pivot + 1; row < kTypeBTermCount; ++row) {
-      const double value = std::fabs(augmented[row][pivot]);
-      if (value > best_value) {
-        best_value = value;
-        best_row = row;
-      }
-    }
-    if (best_value < 1.0e-14) {
-      return false;
-    }
-    if (best_row != pivot) {
-      for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
-        std::swap(augmented[pivot][col], augmented[best_row][col]);
-      }
-    }
-
-    const double diagonal = augmented[pivot][pivot];
-    for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
-      augmented[pivot][col] /= diagonal;
-    }
-
-    for (int row = 0; row < kTypeBTermCount; ++row) {
-      if (row == pivot) {
-        continue;
-      }
-      const double factor = augmented[row][pivot];
-      if (std::fabs(factor) < 1.0e-18) {
-        continue;
-      }
-      for (int col = 0; col < 2 * kTypeBTermCount; ++col) {
-        augmented[row][col] -= factor * augmented[pivot][col];
-      }
-    }
+  if (!found) {
+    return false;
   }
-
-  for (int row = 0; row < kTypeBTermCount; ++row) {
-    for (int col = 0; col < kTypeBTermCount; ++col) {
-      output[row][col] = augmented[row][col + kTypeBTermCount];
-    }
-  }
+  index = best_index;
+  distance_sq = best_dist_sq;
   return true;
 }
 
-double ComputeProbePressureByLsmpsTypeB(const VTKFrame& frame,
-                                        const Point2D& probe,
-                                        double radius) {
+double ComputeProbePressureByOriginalMpsTaylor(const VTKFrame& frame,
+                                               const Point2D& probe,
+                                               double radius,
+                                               int probe_min_neighbors) {
   if (frame.positions.empty() || radius <= 0.0) {
     return 0.0;
   }
 
   const double radius_sq = radius * radius;
-  double moment[kTypeBTermCount][kTypeBTermCount] = {};
-  double rhs[kTypeBTermCount] = {};
-  int neighbor_count = 0;
-
-  for (size_t j = 0; j < frame.positions.size(); ++j) {
-    const double dx = frame.positions[j].x - probe.x;
-    const double dy = frame.positions[j].y - probe.y;
+  int probe_neighbor_count = 0;
+  for (size_t k = 0; k < frame.positions.size(); ++k) {
+    const double dx = frame.positions[k].x - probe.x;
+    const double dy = frame.positions[k].y - probe.y;
     const double dist_sq = dx * dx + dy * dy;
-    if (dist_sq <= 1.0e-24 || dist_sq > radius_sq) {
+    if (dist_sq <= kTinyDistance * kTinyDistance || dist_sq > radius_sq) {
       continue;
     }
-    const double distance = std::sqrt(dist_sq);
-    const double weight = ComputeMpsWeight(distance, radius);
-    if (weight <= 0.0) {
+    ++probe_neighbor_count;
+  }
+
+  // 当测压点邻域粒子数少于3时，不寻找锚点，压力直接置零。
+  if (probe_neighbor_count < probe_min_neighbors) {
+    return 0.0;
+  }
+
+  size_t anchor_index = 0;
+  double anchor_dist_sq = 0.0;
+  if (!FindNearestParticleIndex(frame, probe, radius, anchor_index, anchor_dist_sq, true)) {
+    return 0.0;
+  }
+  const Point2D& anchor = frame.positions[anchor_index];
+  const double anchor_pressure = frame.pressures[anchor_index];
+
+  double n0 = 0.0;
+  for (size_t k = 0; k < frame.positions.size(); ++k) {
+    const double dx = frame.positions[k].x - anchor.x;
+    const double dy = frame.positions[k].y - anchor.y;
+    const double dist_sq = dx * dx + dy * dy;
+    if (dist_sq <= kTinyDistance * kTinyDistance || dist_sq > radius_sq) {
+      continue;
+    }
+    const double dist = std::sqrt(dist_sq);
+    n0 += ComputeMpsWeight(dist, radius);
+  }
+
+  if (n0 <= kTinyDistance) {
+    return anchor_pressure;
+  }
+
+  double grad_x = 0.0;
+  double grad_y = 0.0;
+  for (size_t k = 0; k < frame.positions.size(); ++k) {
+    const double dx = frame.positions[k].x - anchor.x;
+    const double dy = frame.positions[k].y - anchor.y;
+    const double dist_sq = dx * dx + dy * dy;
+    if (dist_sq <= kTinyDistance * kTinyDistance || dist_sq > radius_sq) {
+      continue;
+    }
+    const double dist = std::sqrt(dist_sq);
+    const double w = ComputeMpsWeight(dist, radius);
+    if (w <= 0.0) {
       continue;
     }
 
-    double basis[kTypeBTermCount] = {};
-    basis[0] = 1.0;
-    basis[1] = dx / radius;
-    basis[2] = dy / radius;
-    basis[3] = (dx * dx) / (2.0 * radius * radius);
-    basis[4] = (dy * dy) / (2.0 * radius * radius);
-    basis[5] = (dx * dy) / (radius * radius);
-
-    for (int row = 0; row < kTypeBTermCount; ++row) {
-      for (int col = 0; col < kTypeBTermCount; ++col) {
-        moment[row][col] += weight * basis[row] * basis[col];
-      }
-      rhs[row] += weight * frame.pressures[j] * basis[row];
-    }
-    ++neighbor_count;
+    const double factor = static_cast<double>(kDimension2D) * w *
+                          (frame.pressures[k] - anchor_pressure) / (n0 * dist_sq);
+    grad_x += factor * dx;
+    grad_y += factor * dy;
   }
 
-  if (neighbor_count < kTypeBTermCount) {
-    return ComputeProbePressureByNearest(frame, probe, radius);
-  }
-
-  double inverse_moment[kTypeBTermCount][kTypeBTermCount] = {};
-  if (!InvertMatrix6x6(moment, inverse_moment)) {
-    return ComputeProbePressureByNearest(frame, probe, radius);
-  }
-
-  double pressure = 0.0;
-  for (int col = 0; col < kTypeBTermCount; ++col) {
-    pressure += inverse_moment[0][col] * rhs[col];
-  }
-  return pressure;
+  const double rx = probe.x - anchor.x;
+  const double ry = probe.y - anchor.y;
+  return anchor_pressure + grad_x * rx + grad_y * ry;
 }
 
 }  // namespace
@@ -646,7 +660,8 @@ int main(int argc, char* argv[]) {
       } else if (options.method == Options::ProbeMethod::kNearestParticle) {
         pressure = ComputeProbePressureByNearest(frame, probe, options.radius);
       } else {
-        pressure = ComputeProbePressureByLsmpsTypeB(frame, probe, options.radius);
+        pressure = ComputeProbePressureByOriginalMpsTaylor(
+            frame, probe, options.radius, options.mps_probe_min_neighbors);
       }
       csv_file << "," << pressure;
     }
@@ -662,11 +677,13 @@ int main(int argc, char* argv[]) {
   std::cout << "  观测点数量: " << options.probe_points.size() << "\n";
   std::cout << "  邻域半径: " << options.radius << "\n";
   std::cout << "  压力字段: " << options.pressure_field << "\n";
+  std::cout << "  mps_taylor最少邻域粒子数: " << options.mps_probe_min_neighbors << "\n";
   std::cout << "  测量方法: "
             << (options.method == Options::ProbeMethod::kAverageInRadius
                     ? "average"
-                    : (options.method == Options::ProbeMethod::kNearestParticle ? "nearest"
-                                                                                : "lsmps"))
+                    : (options.method == Options::ProbeMethod::kNearestParticle
+                           ? "nearest"
+                           : "mps_taylor"))
             << "\n";
 
   return (processed > 0) ? 0 : 1;

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 from pathlib import Path
 from typing import List, Tuple
 
@@ -112,8 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exp",
         type=Path,
-        default=Path("tools/data/dambreak_pressure.txt"),
-        help="Experiment pressure TXT path (col1=time, col2=pressure).",
+        required=True,
+        help="Experiment pressure TXT path (col1=time[s], col2=pressure[Pa]).",
     )
     parser.add_argument(
         "--sim",
@@ -140,27 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Simulation pressure column name in CSV.",
     )
     parser.add_argument(
-        "--time-scale",
-        type=float,
-        default=math.sqrt(9.8 / 0.6),
-        help="Scale factor for non-dimensional time: t*sqrt(g/H).",
-    )
-    parser.add_argument(
         "--max-time",
         type=float,
-        default=2.0,
-        help="Maximum non-dimensional time shown in figure: t*sqrt(g/H).",
-    )
-    parser.add_argument(
-        "--p0",
-        type=float,
-        default=10000.0,
-        help="Reference pressure P0 for normalization (Pa).",
-    )
-    parser.add_argument(
-        "--normalize-exp-with-p0",
-        action="store_true",
-        help="Normalize experimental pressure by P0 (use only when experiment data is in Pa).",
+        default=None,
+        help="Maximum physical time shown in figure (seconds).",
     )
     parser.add_argument(
         "--out",
@@ -183,31 +165,23 @@ def main() -> None:
 
     if args.dt <= 0.0:
         raise ValueError("--dt must be positive")
-    if args.time_scale <= 0.0:
-        raise ValueError("--time-scale must be positive")
-    if args.max_time <= 0.0:
+    if args.max_time is not None and args.max_time <= 0.0:
         raise ValueError("--max-time must be positive")
-    if args.p0 <= 0.0:
-        raise ValueError("--p0 must be positive")
 
     exp_path = resolve_exp_path(args.exp)
     exp_time, exp_pressure = read_experiment_txt(exp_path)
-    exp_time, exp_pressure = filter_by_max_time(exp_time, exp_pressure, args.max_time)
 
     sim_step, sim_pressure = read_simulation_csv(
         args.sim, time_col=args.sim_time_col, pressure_col=args.sim_pressure_col
     )
-    sim_time = [step * args.dt * args.time_scale for step in sim_step]
-    sim_time, sim_pressure = filter_by_max_time(sim_time, sim_pressure, args.max_time)
+    sim_time = [step * args.dt for step in sim_step]
+    if args.max_time is not None:
+        sim_time, sim_pressure = filter_by_max_time(sim_time, sim_pressure, args.max_time)
 
     if not exp_time:
         raise ValueError("No experiment data found.")
     if not sim_time:
         raise ValueError("No simulation points left after max-time filtering.")
-
-    if args.normalize_exp_with_p0:
-        exp_pressure = [p / args.p0 for p in exp_pressure]
-    sim_pressure = [p / args.p0 for p in sim_pressure]
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -221,23 +195,17 @@ def main() -> None:
         label="Experiment",
     )
     plt.plot(sim_time, sim_pressure, "-", linewidth=2.0, label="Simulation")
-    plt.xlabel("t(g/H)^0.5")
-    plt.ylabel("P/P0")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Pressure (Pa)")
     plt.title(args.title)
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
     plt.savefig(args.out, dpi=220)
     print(f"Saved figure to: {args.out}")
-    print(
-        "Applied simulation non-dimensional time transform: "
-        f"t_nd = (step * dt) * sqrt(g/H) = (step * {args.dt}) * {args.time_scale}"
-    )
-    print(
-        "Assumed experiment time is already non-dimensional (t*sqrt(g/H)); no extra transform applied."
-    )
-    print(f"Applied non-dimensional time filter: t_nd <= {args.max_time}")
-    print(f"Applied pressure normalization: P/P0, P0 = {args.p0} Pa")
+    print(f"Applied simulation time transform: t = step * dt = step * {args.dt}")
+    if args.max_time is not None:
+        print(f"Applied physical time filter to simulation data only: t <= {args.max_time} s")
 
 
 if __name__ == "__main__":

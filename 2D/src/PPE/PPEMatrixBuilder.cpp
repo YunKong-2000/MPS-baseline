@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 
 // PETSc头文件（用于直接构建PETSc矩阵）
 #include <petsc.h>
@@ -13,6 +14,78 @@
 #include <petscvec.h>
 
 namespace mps2D {
+
+namespace {
+
+constexpr double kNearWallSurfaceDistanceRatio = 1.5;
+
+bool IsNearWallSurfaceParticle(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    double particle_spacing,
+    double smoothing_radius) {
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.position.size()) ||
+      particle_idx >= static_cast<int>(fluid_particles.solid_neighbour_list.size())) {
+    return false;
+  }
+
+  const auto& solid_neighbours = fluid_particles.solid_neighbour_list[particle_idx];
+  if (solid_neighbours.empty()) {
+    return false;
+  }
+
+  const double near_wall_threshold =
+      (particle_spacing > 0.0)
+          ? (kNearWallSurfaceDistanceRatio * particle_spacing)
+          : smoothing_radius;
+  if (near_wall_threshold <= 0.0) {
+    return false;
+  }
+
+  const double2& pos_i = fluid_particles.position[particle_idx];
+  double min_wall_distance = std::numeric_limits<double>::max();
+  for (int wall_idx : solid_neighbours) {
+    if (wall_idx < 0 ||
+        wall_idx >= static_cast<int>(solid_particles.position.size())) {
+      continue;
+    }
+    const double dist = ComputeDistance(pos_i, solid_particles.position[wall_idx]);
+    if (dist < min_wall_distance) {
+      min_wall_distance = dist;
+    }
+  }
+
+  return min_wall_distance <= near_wall_threshold;
+}
+
+bool ShouldApplyPenaltyConstraint(
+    int particle_idx,
+    const FluidParticle& fluid_particles,
+    const SolidParticle& solid_particles,
+    double particle_spacing,
+    double smoothing_radius) {
+  if (particle_idx < 0 ||
+      particle_idx >= static_cast<int>(fluid_particles.surface_type.size())) {
+    return false;
+  }
+
+  const SurfaceType type = fluid_particles.surface_type[particle_idx];
+  if (type == SurfaceType::SPLASH) {
+    return true;
+  }
+  if (type != SurfaceType::SURFACE) {
+    return false;
+  }
+
+  // 近壁自由面粒子不施加罚函数，直接由PPE离散系统求解压力。
+  return !IsNearWallSurfaceParticle(
+      particle_idx, fluid_particles, solid_particles, particle_spacing,
+      smoothing_radius);
+}
+
+}  // namespace
 
 // 确保PETSc已在程序入口处初始化（用于BuildPPEMatrixPetsc）
 static bool EnsurePetscInitialized() {
@@ -145,12 +218,16 @@ bool PPEMatrixBuilder::BuildPPEMatrixPetsc(
   double penalty_mu_safe = penalty_mu;
   if (penalty_mu_safe <= 0.0) {
     const double dx = (particle_spacing > 0.0) ? particle_spacing : 1e-12;
-    // 使用与PPE主对角同量纲的默认尺度，避免参数缺失时约束过弱
-    penalty_mu_safe = 100.0 / (dx * dx * density);
+    const double density_safe = (density > 0.0) ? density : 1e-12;
+    // K = A^T A 的主对角典型量级约为 O(1 / (rho^2 * dx^4))，
+    // 默认罚参数按相同尺度设置，避免不同粒子间距下约束强度失衡。
+    penalty_mu_safe =
+        100.0 / (dx * dx * dx * dx * density_safe * density_safe);
   }
   for (int i = 0; i < num_fluid_particles; ++i) {
-    const SurfaceType type = fluid_particles.surface_type[i];
-    if (type != SurfaceType::SURFACE && type != SurfaceType::SPLASH) {
+    if (!ShouldApplyPenaltyConstraint(
+            i, fluid_particles, solid_particles, particle_spacing,
+            smoothing_radius)) {
       continue;
     }
     const PetscInt idx = static_cast<PetscInt>(i);
